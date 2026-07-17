@@ -1,0 +1,12 @@
+[package]
+name = "blacknode-dataset"
+version = "0.1.0"
+description = "Blacknode-native episode recording, validation, HDF5/LeRobot export, and Hugging Face upload."
+requires-blacknode = ">=0.1.0"
+
+[categories]
+"Dataset" = "#8b5cf6"
+
+[dependencies]
+pip = ["pyarrow>=16", "pandas>=2.0", "opencv-python>=4.8", "numpy>=1.24", "huggingface-hub>=0.24", "h5py>=3.11"]
+imports = ["pyarrow", "pandas", "cv2", "numpy", "huggingface_hub", "h5py"]

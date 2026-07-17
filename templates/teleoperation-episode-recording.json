@@ -1,0 +1,1001 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "SO-ARM101 Teleoperation Episode Recording",
+  "saved_at": "2026-07-16T00:00:00",
+  "entrypoint": {
+    "node_id": "recorder",
+    "port": "dashboard"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Run calibrated leader-follower teleoperation and one or more local cameras, preview them live, then record synchronized robot observations/actions and frames into crash-recoverable episodes. Recorder starts in status mode and teleoperation starts disarmed.",
+    "color": "#8b5cf6",
+    "required_packages": [
+      "blacknode-robot",
+      "blacknode-ros2",
+      "blacknode-vision",
+      "blacknode-dataset"
+    ]
+  },
+  "node_meta": {
+    "rosbridge": {
+      "id": "rosbridge",
+      "type": "ROS2Status",
+      "pos": [
+        420,
+        40
+      ],
+      "params": {
+        "transport": "rosbridge",
+        "ensure_rosbridge": true,
+        "host": "127.0.0.1",
+        "port": 9090,
+        "state_topic": "/leader/joint_states",
+        "command_topic": "/follower/joint_commands",
+        "config_topic": "/follower/joint_config",
+        "timeout": 5.0
+      },
+      "inputs": [
+        "trigger",
+        "transport",
+        "ensure_rosbridge",
+        "host",
+        "port",
+        "state_topic",
+        "command_topic",
+        "config_topic",
+        "timeout"
+      ],
+      "outputs": [
+        "connected",
+        "ready",
+        "transport",
+        "topics",
+        "config",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "transport": "Text",
+        "ensure_rosbridge": "Bool",
+        "host": "Text",
+        "port": "Int",
+        "state_topic": "Text",
+        "command_topic": "Text",
+        "config_topic": "Text",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "connected": "Bool",
+        "ready": "Bool",
+        "transport": "Text",
+        "topics": "List",
+        "config": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "transport": "rosbridge",
+        "ensure_rosbridge": true,
+        "host": "127.0.0.1",
+        "port": 9090,
+        "state_topic": "/leader/joint_states",
+        "command_topic": "/follower/joint_commands",
+        "config_topic": "/follower/joint_config",
+        "timeout": 5.0
+      },
+      "input_choices": {
+        "transport": [
+          "auto",
+          "native",
+          "rosbridge"
+        ]
+      }
+    },
+    "leader_robot": {
+      "id": "leader_robot",
+      "type": "Robot",
+      "pos": [
+        820,
+        200
+      ],
+      "params": {
+        "profile_id": "so_arm101",
+        "selection": 0,
+        "action": "start",
+        "run_id": "leader_arm_driver",
+        "topic_prefix": "/leader",
+        "rate_hz": 60.0,
+        "host": "127.0.0.1",
+        "port": 9090,
+        "state_topic": "/leader/joint_states",
+        "command_topic": "/leader/joint_commands",
+        "config_topic": "/leader/joint_config",
+        "control_topic": "/leader/robot_control",
+        "units": "degrees"
+      },
+      "inputs": [
+        "trigger",
+        "driver",
+        "usb",
+        "action",
+        "run_id",
+        "port_filter",
+        "probe_open",
+        "require_usb",
+        "serial_port",
+        "host",
+        "port",
+        "state_topic",
+        "command_topic",
+        "config_topic",
+        "control_topic",
+        "units"
+      ],
+      "outputs": [
+        "found",
+        "ready",
+        "usb_ready",
+        "driver_running",
+        "usb",
+        "driver",
+        "robot",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "driver": "Dict",
+        "usb": "Dict",
+        "action": "Text",
+        "run_id": "Text",
+        "port_filter": "Text",
+        "probe_open": "Bool",
+        "require_usb": "Bool",
+        "serial_port": "Text",
+        "host": "Text",
+        "port": "Int",
+        "state_topic": "Text",
+        "command_topic": "Text",
+        "config_topic": "Text",
+        "control_topic": "Text",
+        "units": "Text"
+      },
+      "output_types": {
+        "found": "Bool",
+        "ready": "Bool",
+        "usb_ready": "Bool",
+        "driver_running": "Bool",
+        "usb": "Dict",
+        "driver": "Dict",
+        "robot": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "start",
+        "run_id": "leader_arm_driver",
+        "port_filter": "",
+        "probe_open": false,
+        "require_usb": true,
+        "serial_port": "",
+        "host": "127.0.0.1",
+        "port": 9090,
+        "state_topic": "/leader/joint_states",
+        "command_topic": "/leader/joint_commands",
+        "config_topic": "/leader/joint_config",
+        "control_topic": "/leader/robot_control",
+        "units": "degrees"
+      },
+      "input_choices": {
+        "action": [
+          "check",
+          "start",
+          "stop"
+        ],
+        "units": [
+          "radians",
+          "degrees"
+        ]
+      }
+    },
+    "follower_robot": {
+      "id": "follower_robot",
+      "type": "Robot",
+      "pos": [
+        820,
+        620
+      ],
+      "params": {
+        "profile_id": "so_arm101",
+        "selection": 1,
+        "action": "start",
+        "run_id": "follower_arm_driver",
+        "topic_prefix": "/follower",
+        "rate_hz": 60.0,
+        "host": "127.0.0.1",
+        "port": 9090,
+        "state_topic": "/follower/joint_states",
+        "command_topic": "/follower/joint_commands",
+        "config_topic": "/follower/joint_config",
+        "control_topic": "/follower/robot_control",
+        "units": "degrees"
+      },
+      "inputs": [
+        "trigger",
+        "driver",
+        "usb",
+        "action",
+        "run_id",
+        "port_filter",
+        "probe_open",
+        "require_usb",
+        "serial_port",
+        "host",
+        "port",
+        "state_topic",
+        "command_topic",
+        "config_topic",
+        "control_topic",
+        "units"
+      ],
+      "outputs": [
+        "found",
+        "ready",
+        "usb_ready",
+        "driver_running",
+        "usb",
+        "driver",
+        "robot",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "driver": "Dict",
+        "usb": "Dict",
+        "action": "Text",
+        "run_id": "Text",
+        "port_filter": "Text",
+        "probe_open": "Bool",
+        "require_usb": "Bool",
+        "serial_port": "Text",
+        "host": "Text",
+        "port": "Int",
+        "state_topic": "Text",
+        "command_topic": "Text",
+        "config_topic": "Text",
+        "control_topic": "Text",
+        "units": "Text"
+      },
+      "output_types": {
+        "found": "Bool",
+        "ready": "Bool",
+        "usb_ready": "Bool",
+        "driver_running": "Bool",
+        "usb": "Dict",
+        "driver": "Dict",
+        "robot": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "start",
+        "run_id": "follower_arm_driver",
+        "port_filter": "",
+        "probe_open": false,
+        "require_usb": true,
+        "serial_port": "",
+        "host": "127.0.0.1",
+        "port": 9090,
+        "state_topic": "/follower/joint_states",
+        "command_topic": "/follower/joint_commands",
+        "config_topic": "/follower/joint_config",
+        "control_topic": "/follower/robot_control",
+        "units": "degrees"
+      },
+      "input_choices": {
+        "action": [
+          "check",
+          "start",
+          "stop"
+        ],
+        "units": [
+          "radians",
+          "degrees"
+        ]
+      }
+    },
+    "leader_release": {
+      "id": "leader_release",
+      "type": "ROS2ManualMove",
+      "pos": [
+        1220,
+        200
+      ],
+      "params": {
+        "run_id": "leader_pose_stream",
+        "action": "release",
+        "transport": "rosbridge",
+        "host": "127.0.0.1",
+        "port": 9090,
+        "state_topic": "/leader/joint_states",
+        "config_topic": "/leader/joint_config",
+        "control_topic": "/leader/robot_control",
+        "units": "degrees",
+        "timeout": 5.0
+      },
+      "inputs": [
+        "trigger",
+        "run_id",
+        "action",
+        "transport",
+        "robot",
+        "host",
+        "port",
+        "state_topic",
+        "config_topic",
+        "control_topic",
+        "units",
+        "timeout"
+      ],
+      "outputs": [
+        "action",
+        "live",
+        "data_ready",
+        "mode",
+        "torque_enabled",
+        "pose",
+        "joints",
+        "updated_at",
+        "dashboard",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "run_id": "Text",
+        "action": "Text",
+        "transport": "Text",
+        "robot": "Dict",
+        "host": "Text",
+        "port": "Int",
+        "state_topic": "Text",
+        "config_topic": "Text",
+        "control_topic": "Text",
+        "units": "Text",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "action": "Text",
+        "live": "Bool",
+        "data_ready": "Bool",
+        "mode": "Text",
+        "torque_enabled": "Bool",
+        "pose": "Dict",
+        "joints": "List",
+        "updated_at": "Text",
+        "dashboard": "Image",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "run_id": "leader_pose_stream",
+        "action": "release",
+        "transport": "rosbridge",
+        "host": "127.0.0.1",
+        "port": 9090,
+        "state_topic": "/leader/joint_states",
+        "config_topic": "/leader/joint_config",
+        "control_topic": "/leader/robot_control",
+        "units": "degrees",
+        "timeout": 5.0
+      },
+      "input_choices": {
+        "action": [
+          "check",
+          "release",
+          "hold"
+        ],
+        "transport": [
+          "auto",
+          "native",
+          "rosbridge"
+        ],
+        "units": [
+          "radians",
+          "degrees"
+        ]
+      }
+    },
+    "follow": {
+      "id": "follow",
+      "type": "ROS2LeaderFollower",
+      "pos": [
+        1640,
+        360
+      ],
+      "params": {
+        "action": "start",
+        "run_id": "so_arm_leader_follower",
+        "transport": "rosbridge",
+        "host": "127.0.0.1",
+        "port": 9090,
+        "joint_map": {},
+        "scale": {},
+        "offset_deg": {},
+        "tracking_mode": "direct",
+        "loop_hz": 60.0,
+        "max_step_deg": 0.0,
+        "deadband_deg": 0.0,
+        "stale_after": 0.75,
+        "require_calibration": true,
+        "require_leader_released": true,
+        "armed": false,
+        "timeout": 10.0
+      },
+      "inputs": [
+        "trigger",
+        "action",
+        "run_id",
+        "leader_robot",
+        "follower_robot",
+        "transport",
+        "host",
+        "port",
+        "joint_map",
+        "scale",
+        "offset_deg",
+        "tracking_mode",
+        "loop_hz",
+        "max_step_deg",
+        "deadband_deg",
+        "stale_after",
+        "require_calibration",
+        "require_leader_released",
+        "armed",
+        "timeout"
+      ],
+      "outputs": [
+        "running",
+        "live",
+        "armed",
+        "commanded",
+        "leader_pose",
+        "follower_pose",
+        "target",
+        "clamped",
+        "joint_count",
+        "sample_stream",
+        "dashboard",
+        "summary",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "run_id": "Text",
+        "leader_robot": "Dict",
+        "follower_robot": "Dict",
+        "transport": "Text",
+        "host": "Text",
+        "port": "Int",
+        "joint_map": "Dict",
+        "scale": "Dict",
+        "offset_deg": "Dict",
+        "tracking_mode": "Text",
+        "loop_hz": "Float",
+        "max_step_deg": "Float",
+        "deadband_deg": "Float",
+        "stale_after": "Float",
+        "require_calibration": "Bool",
+        "require_leader_released": "Bool",
+        "armed": "Bool",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "running": "Bool",
+        "live": "Bool",
+        "armed": "Bool",
+        "commanded": "Bool",
+        "leader_pose": "Dict",
+        "follower_pose": "Dict",
+        "target": "Dict",
+        "clamped": "List",
+        "joint_count": "Int",
+        "dashboard": "Image",
+        "summary": "Dict",
+        "report": "Text",
+        "sample_stream": "Dict"
+      },
+      "input_defaults": {
+        "action": "start",
+        "run_id": "so_arm_leader_follower",
+        "transport": "rosbridge",
+        "host": "127.0.0.1",
+        "port": 9090,
+        "joint_map": {},
+        "scale": {},
+        "offset_deg": {},
+        "tracking_mode": "direct",
+        "loop_hz": 60.0,
+        "max_step_deg": 0.0,
+        "deadband_deg": 0.0,
+        "stale_after": 0.75,
+        "require_calibration": true,
+        "require_leader_released": true,
+        "armed": false,
+        "timeout": 10.0
+      },
+      "input_choices": {
+        "action": [
+          "start",
+          "stop",
+          "check"
+        ],
+        "transport": [
+          "auto",
+          "native",
+          "rosbridge"
+        ],
+        "tracking_mode": [
+          "bounded",
+          "direct"
+        ]
+      }
+    },
+    "camera": {
+      "id": "camera",
+      "type": "Camera",
+      "pos": [
+        1660,
+        820
+      ],
+      "params": {
+        "action": "start",
+        "selection": 0,
+        "stream_id": "",
+        "max_devices": 8,
+        "width": 640,
+        "height": 480,
+        "host": "127.0.0.1",
+        "port": 0,
+        "max_fps": 30.0,
+        "max_width": 960,
+        "jpeg_quality": 90
+      },
+      "inputs": [
+        "trigger",
+        "action",
+        "selection",
+        "stream_id",
+        "backend",
+        "max_devices",
+        "width",
+        "height",
+        "host",
+        "port",
+        "max_fps",
+        "max_width",
+        "jpeg_quality"
+      ],
+      "outputs": [
+        "found",
+        "count",
+        "devices",
+        "camera",
+        "label",
+        "preview",
+        "streaming",
+        "stream_url",
+        "snapshot_url",
+        "health_url",
+        "frame_stream",
+        "stream_id",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "selection": "Int",
+        "stream_id": "Text",
+        "backend": "Text",
+        "max_devices": "Int",
+        "width": "Int",
+        "height": "Int",
+        "host": "Text",
+        "port": "Int",
+        "max_fps": "Float",
+        "max_width": "Int",
+        "jpeg_quality": "Int"
+      },
+      "output_types": {
+        "found": "Bool",
+        "count": "Int",
+        "devices": "List",
+        "camera": "Dict",
+        "label": "Text",
+        "preview": "Image",
+        "streaming": "Bool",
+        "stream_url": "Text",
+        "snapshot_url": "Text",
+        "health_url": "Text",
+        "frame_stream": "Dict",
+        "stream_id": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "start",
+        "selection": 0,
+        "stream_id": "",
+        "backend": "auto",
+        "max_devices": 8,
+        "width": 640,
+        "height": 480,
+        "host": "127.0.0.1",
+        "port": 0,
+        "max_fps": 30.0,
+        "max_width": 960,
+        "jpeg_quality": 90
+      },
+      "input_choices": {
+        "action": [
+          "start",
+          "stop"
+        ],
+        "backend": [
+          "auto",
+          "dshow",
+          "msmf",
+          "v4l2",
+          "avfoundation",
+          "any"
+        ]
+      }
+    },
+    "dataset": {
+      "id": "dataset",
+      "type": "DatasetCreate",
+      "pos": [
+        2040,
+        700
+      ],
+      "params": {
+        "dataset_id": "teleoperation-demo",
+        "root": "",
+        "task": "Teleoperate the robot to complete the demonstration",
+        "fps": 30,
+        "robot_type": "so_arm101",
+        "metadata": {}
+      },
+      "inputs": [
+        "trigger",
+        "dataset_id",
+        "root",
+        "task",
+        "fps",
+        "robot_type",
+        "metadata"
+      ],
+      "outputs": [
+        "dataset",
+        "path",
+        "summary",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "dataset_id": "Text",
+        "root": "Text",
+        "task": "Text",
+        "fps": "Int",
+        "robot_type": "Text",
+        "metadata": "Dict"
+      },
+      "output_types": {
+        "dataset": "Dict",
+        "path": "Text",
+        "summary": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "dataset_id": "teleoperation-demo",
+        "root": "",
+        "task": "Teleoperate the robot to complete the demonstration",
+        "fps": 30,
+        "robot_type": "so_arm101",
+        "metadata": {}
+      }
+    },
+    "recorder": {
+      "id": "recorder",
+      "type": "EpisodeRecorder",
+      "pos": [
+        2460,
+        440
+      ],
+      "params": {
+        "action": "status",
+        "run_id": "teleoperation_episode",
+        "require_armed": true,
+        "stale_after": 0.5,
+        "request_timeout": 1.0
+      },
+      "inputs": [
+        "trigger",
+        "action",
+        "run_id",
+        "dataset",
+        "robot_stream",
+        "camera_stream",
+        "camera_streams",
+        "require_armed",
+        "stale_after",
+        "request_timeout"
+      ],
+      "outputs": [
+        "running",
+        "recording",
+        "paused",
+        "episode_index",
+        "frame_count",
+        "dropped_frames",
+        "duration_seconds",
+        "dataset",
+        "status",
+        "dashboard",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "run_id": "Text",
+        "dataset": "Dict",
+        "robot_stream": "Dict",
+        "camera_stream": "Dict",
+        "camera_streams": "List",
+        "require_armed": "Bool",
+        "stale_after": "Float",
+        "request_timeout": "Float"
+      },
+      "output_types": {
+        "running": "Bool",
+        "recording": "Bool",
+        "paused": "Bool",
+        "episode_index": "Int",
+        "frame_count": "Int",
+        "dropped_frames": "Int",
+        "duration_seconds": "Float",
+        "dataset": "Dict",
+        "status": "Dict",
+        "dashboard": "Image",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "status",
+        "run_id": "teleoperation_episode",
+        "camera_streams": [],
+        "require_armed": true,
+        "stale_after": 0.5,
+        "request_timeout": 1.0
+      },
+      "input_choices": {
+        "action": [
+          "status",
+          "start",
+          "pause",
+          "resume",
+          "save",
+          "finalize",
+          "stop",
+          "discard"
+        ]
+      }
+    },
+    "hdf5_export": {
+      "id": "hdf5_export",
+      "type": "HDF5EpisodeExport",
+      "pos": [
+        2860,
+        700
+      ],
+      "params": {
+        "action": "check",
+        "output_path": "",
+        "include_images": true,
+        "compression": "gzip"
+      },
+      "inputs": [
+        "trigger",
+        "action",
+        "dataset",
+        "output_path",
+        "include_images",
+        "compression"
+      ],
+      "outputs": [
+        "ok",
+        "exported",
+        "export",
+        "path",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "dataset": "Dict",
+        "output_path": "Text",
+        "include_images": "Bool",
+        "compression": "Text"
+      },
+      "output_types": {
+        "ok": "Bool",
+        "exported": "Bool",
+        "export": "Dict",
+        "path": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "check",
+        "output_path": "",
+        "include_images": true,
+        "compression": "gzip"
+      },
+      "input_choices": {
+        "action": [
+          "check",
+          "export"
+        ],
+        "compression": [
+          "gzip",
+          "lzf",
+          "none"
+        ]
+      }
+    },
+    "camera_list": {
+      "id": "camera_list",
+      "type": "DatasetCameraStreamList",
+      "pos": [
+        2040,
+        880
+      ],
+      "params": {},
+      "inputs": [
+        "trigger",
+        "camera_1"
+      ],
+      "outputs": [
+        "camera_streams",
+        "camera_count",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "camera_1": "Dict"
+      },
+      "output_types": {
+        "camera_streams": "List",
+        "camera_count": "Int",
+        "report": "Text"
+      },
+      "input_defaults": {},
+      "variadic_input": {
+        "prefix": "camera",
+        "type": "Dict"
+      }
+    },
+    "camera_preview_out": {
+      "id": "camera_preview_out",
+      "type": "Output",
+      "pos": [
+        2040,
+        1060
+      ],
+      "params": {
+        "label": "Dataset camera live preview"
+      },
+      "inputs": [
+        "value"
+      ],
+      "outputs": [],
+      "input_types": {
+        "value": "Any"
+      },
+      "output_types": {},
+      "input_defaults": {}
+    }
+  },
+  "edges": [
+    {
+      "from": "rosbridge",
+      "from_port": "report",
+      "to": "leader_robot",
+      "to_port": "trigger"
+    },
+    {
+      "from": "rosbridge",
+      "from_port": "report",
+      "to": "follower_robot",
+      "to_port": "trigger"
+    },
+    {
+      "from": "leader_robot",
+      "from_port": "robot",
+      "to": "leader_release",
+      "to_port": "robot"
+    },
+    {
+      "from": "leader_robot",
+      "from_port": "report",
+      "to": "leader_release",
+      "to_port": "trigger"
+    },
+    {
+      "from": "leader_release",
+      "from_port": "report",
+      "to": "follow",
+      "to_port": "trigger"
+    },
+    {
+      "from": "leader_robot",
+      "from_port": "robot",
+      "to": "follow",
+      "to_port": "leader_robot"
+    },
+    {
+      "from": "follower_robot",
+      "from_port": "robot",
+      "to": "follow",
+      "to_port": "follower_robot"
+    },
+    {
+      "from": "dataset",
+      "from_port": "dataset",
+      "to": "recorder",
+      "to_port": "dataset"
+    },
+    {
+      "from": "recorder",
+      "from_port": "dataset",
+      "to": "hdf5_export",
+      "to_port": "dataset"
+    },
+    {
+      "from": "follow",
+      "from_port": "sample_stream",
+      "to": "recorder",
+      "to_port": "robot_stream"
+    },
+    {
+      "from": "follow",
+      "from_port": "report",
+      "to": "recorder",
+      "to_port": "trigger"
+    },
+    {
+      "from": "camera_list",
+      "from_port": "camera_streams",
+      "to": "recorder",
+      "to_port": "camera_streams"
+    },
+    {
+      "from": "camera",
+      "from_port": "preview",
+      "to": "camera_preview_out",
+      "to_port": "value"
+    },
+    {
+      "from": "rosbridge",
+      "from_port": "report",
+      "to": "camera",
+      "to_port": "trigger"
+    },
+    {
+      "from": "camera",
+      "from_port": "frame_stream",
+      "to": "camera_list",
+      "to_port": "camera_1"
+    },
+    {
+      "from": "camera",
+      "from_port": "report",
+      "to": "camera_list",
+      "to_port": "trigger"
+    }
+  ]
+}
