@@ -92,7 +92,8 @@ def test_smoothed_stream_streams_through_publisher(episode):
     info = rt.register_smoothed_replay("raw", "spline", strength=1.0)
     handle = {"kind": "blacknode.replay-stream", "token": info["token"]}
     status = rt.start_stream(run_id="sm", stream=handle, host="127.0.0.1", port=0,
-                             fps=60, rate=1.0, loop=True, source="action", units="radians")
+                             fps=60, rate=1.0, loop=True, source="action", units="radians",
+                             sync_to_browser=False)
     assert status["streaming"] is True
     stream = blacknode_ws.connect(status["stream_url"], timeout=5.0)
     try:
@@ -103,6 +104,49 @@ def test_smoothed_stream_streams_through_publisher(episode):
     finally:
         stream.close()
     rt.control_stream("sm", "stop")
+
+
+def test_parameter_update_only_recomputes_smoother_and_hot_swaps_publisher(episode):
+    first = rt.apply_configured_smoother(
+        "smoother-node", "gaussian", 0.5,
+        stream={"kind": "blacknode.replay-stream", "token": "raw"},
+    )
+    first_token = first["stream"]["token"]
+    status = rt.start_stream(
+        run_id="hot-swap", stream=first["stream"], host="127.0.0.1", port=0,
+        fps=60, rate=1.0, loop=True, source="action", units="radians",
+        sync_to_browser=True,
+    )
+    original_url = status["stream_url"]
+    publisher = rt._publishers["hot-swap"]
+    original_thread = publisher.thread
+    stream = blacknode_ws.connect(original_url, timeout=5.0)
+    try:
+        assert stream.recv_json()["kind"] == "blacknode.stream-schema"
+        rt.publish_replay_event("raw", 20, "seek")
+        before = stream.recv_json()
+        assert before["frame_index"] == 20
+        assert before["smoothing"] == {"method": "gaussian", "strength": 0.5}
+
+        updated = rt.apply_configured_smoother("smoother-node", "gaussian", 2.0)
+        updated_token = updated["stream"]["token"]
+
+        assert updated_token != first_token
+        assert publisher.token == updated_token
+        assert publisher.thread is original_thread
+        assert publisher.status()["stream_url"] == original_url
+        assert "updated 1 running publisher" in updated["report"]
+        assert "refreshed the current pose" in updated["report"]
+        with rt._lock:
+            assert first_token not in rt._replay_sessions
+
+        frame = stream.recv_json()
+        assert frame["frame_index"] == 20
+        assert frame["smoothing"] == {"method": "gaussian", "strength": 2.0}
+        assert frame["playback_event"] == "smoother_update"
+    finally:
+        stream.close()
+        rt.control_stream("hot-swap", "stop")
 
 
 def test_direct_filter_math_is_zero_lag_and_shorter_jerk():

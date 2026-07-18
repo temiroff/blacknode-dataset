@@ -32,18 +32,18 @@ _CATEGORY = "Dataset"
       outputs={"stream": Dict, "episode": Dict, "preview": Image, "report": Text})
 def trajectory_smoother(ctx: dict) -> dict:
     try:
-        mode, token, _ = runtime.parse_stream(ctx.get("stream") or {})
+        mode, _token, _ = runtime.parse_stream(ctx.get("stream") or {})
         if mode != "replay":
             raise ValueError("TrajectorySmoother needs a recorded replay stream (offline smoothing "
                              "cannot run on a live sample-stream)")
-        info = runtime.register_smoothed_replay(
-            token,
+        return runtime.apply_configured_smoother(
+            str(ctx.get("__node_id__") or "trajectory_smoother"),
             str(ctx.get("method") or "spline"),
-            float(ctx.get("strength") or 1.0),
+            float(ctx.get("strength") if ctx.get("strength") is not None else 1.0),
             preview_source=str(ctx.get("preview_source") or "action"),
             preview_joint=str(ctx.get("preview_joint") or ""),
+            stream=ctx.get("stream") or {},
         )
-        return runtime.smoother_outputs(info)
     except Exception as exc:  # noqa: BLE001 - surfaced in node report
         return {"stream": {}, "episode": {}, "preview": "",
                 "report": f"trajectory smoother FAILED: {exc}"}

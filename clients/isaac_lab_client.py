@@ -65,6 +65,9 @@ def main() -> None:
             frame = stream.recv_json()
             if frame is None:
                 break
+            if frame.get("kind") == "blacknode.stream-schema":
+                print(f"blacknode: loaded {len(frame.get('joint_names') or [])} replay joints")
+                continue
             targets = torch.tensor([order_positions(robot, frame)], dtype=torch.float32)
             robot.set_joint_position_target(targets)
             robot.write_data_to_sim()

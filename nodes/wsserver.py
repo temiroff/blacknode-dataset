@@ -39,9 +39,10 @@ def _encode_text(payload: bytes) -> bytes:
 class WsBroadcastServer:
     """Accept WebSocket clients on host:port and broadcast text to all of them."""
 
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str, port: int, initial_text: str = ""):
         self.host = host or "127.0.0.1"
         self.port = int(port)
+        self.initial_text = str(initial_text or "")
         self._srv: socket.socket | None = None
         self._clients: set[socket.socket] = set()
         self._lock = threading.RLock()
@@ -79,6 +80,16 @@ class WsBroadcastServer:
                 continue
             with self._lock:
                 self._clients.add(conn)
+            if self.initial_text:
+                try:
+                    conn.sendall(_encode_text(self.initial_text.encode("utf-8")))
+                except OSError:
+                    with self._lock:
+                        self._clients.discard(conn)
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
 
     def _handshake(self, conn: socket.socket) -> None:
         conn.settimeout(5.0)

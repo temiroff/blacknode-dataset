@@ -9,7 +9,7 @@
   },
   "metadata": {
     "template": true,
-    "description": "Select a dataset episode, optionally smooth its shaky trajectories with a zero-lag B-spline filter, then broadcast it frame-by-frame over a WebSocket so ROS 2, Maya, Isaac Sim, or any other app can subscribe. Read-only: it streams recorded joint data and never commands hardware. Set the smoother method (or 'none' to bypass) and the publisher action to start, then connect a client from packages/blacknode-dataset/clients to stream_url.",
+    "description": "Select a dataset episode, optionally smooth its trajectories, then synchronize Dataset Browser play and timeline seek poses to Maya, ROS 2, Isaac Sim, or another WebSocket subscriber. Start the publisher to open stream_url; recorded poses are emitted only while the Browser plays or seeks. Read-only: publishing never commands hardware.",
     "color": "#8b5cf6",
     "required_packages": [
       "blacknode-dataset"
@@ -64,14 +64,15 @@
         "units": "radians",
         "fps": 0,
         "rate": 1.0,
-        "loop": true
+        "loop": true,
+        "sync_to_browser": true
       },
       "pos": [1060, 200],
-      "inputs": ["trigger", "action", "run_id", "stream", "host", "port", "source", "units", "fps", "rate", "loop"],
+      "inputs": ["trigger", "action", "run_id", "stream", "host", "port", "source", "units", "fps", "rate", "loop", "sync_to_browser"],
       "outputs": ["stream_url", "streaming", "clients", "status", "dashboard", "report"],
-      "input_types": {"trigger": "Any", "action": "Text", "run_id": "Text", "stream": "Dict", "host": "Text", "port": "Int", "source": "Text", "units": "Text", "fps": "Float", "rate": "Float", "loop": "Bool"},
+      "input_types": {"trigger": "Any", "action": "Text", "run_id": "Text", "stream": "Dict", "host": "Text", "port": "Int", "source": "Text", "units": "Text", "fps": "Float", "rate": "Float", "loop": "Bool", "sync_to_browser": "Bool"},
       "output_types": {"stream_url": "Text", "streaming": "Bool", "clients": "Int", "status": "Dict", "dashboard": "Image", "report": "Text"},
-      "input_defaults": {"action": "status", "run_id": "stream", "stream": {}, "host": "127.0.0.1", "port": 8765, "source": "action", "units": "radians", "fps": 0, "rate": 1.0, "loop": true}
+      "input_defaults": {"action": "status", "run_id": "stream", "stream": {}, "host": "127.0.0.1", "port": 8765, "source": "action", "units": "radians", "fps": 0, "rate": 1.0, "loop": true, "sync_to_browser": true}
     }
   },
   "edges": [

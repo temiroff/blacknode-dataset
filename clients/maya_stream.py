@@ -7,10 +7,13 @@ inlined, so plain exec works with no sys.path setup:
     exec(open(r"E:\\F\\PROJECTS\\NVDIA\\Blacknode\\packages\\blacknode-dataset\\clients\\maya_stream.py").read())
     show_blacknode_stream_window()
 
-Click Connect: the window discovers the joints from the incoming frames and adds
-one row per joint (joint name -> Maya attribute + scale). Fill in your rig's
-attributes and edits apply live. Values are radians by default; rotate.*
-attributes are converted to degrees for you. Unmapped/blank rows are ignored.
+Click Get joints / Connect: the publisher immediately sends the dataset joint
+schema, without moving the rig. Map each joint to a Maya attribute, choose its
+X/Y/Z axis and +/- direction, and optionally change the scale magnitude. The
+mapping is saved in Maya preferences and restored next time. Poses are applied
+only while Dataset Browser playback runs or its timeline is scrubbed. Values
+are radians by default; rotate.* attributes are converted to degrees for you.
+Unmapped/blank rows are ignored.
 """
 from __future__ import annotations
 
@@ -30,9 +33,10 @@ import maya.utils
 _URL = "bnStreamUrl"
 _STATUS = "bnStreamStatus"
 _JOINTS_COL = "bnStreamJoints"
+_MAPPING_OPTION = "blacknodeDatasetJointMappingV1"
 
 JOINT_MAP: dict[str, dict] = {}   # joint name -> {"attr": ..., "scale": ...}, built from the UI
-_rows: dict[str, tuple] = {}      # joint name -> (attr textField, scale textField)
+_rows: dict[str, tuple] = {}      # joint name -> (attr field, axis menu, sign menu, magnitude field)
 _state = {"sock": None, "thread": None, "frames": 0, "err": "", "running": False, "joints": None}
 
 
@@ -94,18 +98,46 @@ def _ws_frames(sock, rest):
 # ---------------- end WS client ----------------
 
 
+def _load_mapping():
+    if not cmds.optionVar(exists=_MAPPING_OPTION):
+        return {}
+    try:
+        value = json.loads(cmds.optionVar(query=_MAPPING_OPTION) or "{}")
+        return value if isinstance(value, dict) else {}
+    except Exception:  # noqa: BLE001 - a damaged preference should not block the client
+        return {}
+
+
+def _save_mapping():
+    cmds.optionVar(stringValue=(_MAPPING_OPTION, json.dumps(JOINT_MAP, sort_keys=True)))
+
+
+def _sync_axis_from_attr(name):
+    row = _rows.get(name)
+    if not row:
+        return
+    attr = cmds.textField(row[0], query=True, text=True).strip()
+    if attr and attr[-1:].upper() in {"X", "Y", "Z"}:
+        cmds.optionMenu(row[1], edit=True, value=attr[-1:].upper())
+    apply_mapping()
+
+
 def apply_mapping():
     """Read the joint rows in the window into JOINT_MAP."""
     JOINT_MAP.clear()
-    for name, (attr_ctrl, scale_ctrl) in _rows.items():
+    for name, (attr_ctrl, axis_ctrl, sign_ctrl, magnitude_ctrl) in _rows.items():
         attr = cmds.textField(attr_ctrl, query=True, text=True).strip()
         if not attr:
             continue
-        try:
-            scale = float(cmds.textField(scale_ctrl, query=True, text=True) or "1")
-        except ValueError:
-            scale = 1.0
-        JOINT_MAP[name] = {"attr": attr, "scale": scale}
+        axis = cmds.optionMenu(axis_ctrl, query=True, value=True)
+        if attr[-1:].upper() in {"X", "Y", "Z"}:
+            attr = attr[:-1] + axis
+            cmds.textField(attr_ctrl, edit=True, text=attr)
+        sign = -1.0 if cmds.optionMenu(sign_ctrl, query=True, value=True) == "-1" else 1.0
+        magnitude = max(0.0, float(cmds.floatField(magnitude_ctrl, query=True, value=True)))
+        JOINT_MAP[name] = {"attr": attr, "axis": axis, "sign": int(sign),
+                           "magnitude": magnitude, "scale": sign * magnitude}
+    _save_mapping()
 
 
 def _build_rows(names):
@@ -114,17 +146,33 @@ def _build_rows(names):
     for child in (cmds.columnLayout(_JOINTS_COL, query=True, childArray=True) or []):
         cmds.deleteUI(child)
     _rows.clear()
+    saved_mapping = _load_mapping()
     for name in names:
-        cmds.rowLayout(numberOfColumns=3, parent=_JOINTS_COL,
-                       columnWidth3=(120, 170, 44), columnAlign3=("left", "left", "left"),
-                       columnAttach=[(1, "both", 2), (2, "both", 2), (3, "both", 2)])
+        saved = dict(saved_mapping.get(name) or {})
+        attr = str(saved.get("attr") or f"{name}.rotateZ")
+        axis = str(saved.get("axis") or (attr[-1:].upper() if attr[-1:].upper() in {"X", "Y", "Z"} else "Z"))
+        scale = float(saved.get("scale", 1.0))
+        cmds.rowLayout(numberOfColumns=5, parent=_JOINTS_COL,
+                       columnWidth5=(110, 190, 48, 48, 62),
+                       columnAttach=[(1, "both", 2), (2, "both", 2), (3, "both", 2),
+                                     (4, "both", 2), (5, "both", 2)])
         cmds.text(label=name, align="left")
-        attr_ctrl = cmds.textField(text=f"{name}.rotateZ", changeCommand=lambda *_: apply_mapping(),
+        attr_ctrl = cmds.textField(text=attr,
                                    annotation="Maya node.attribute this joint drives; blank = ignore")
-        scale_ctrl = cmds.textField(text="1", changeCommand=lambda *_: apply_mapping(),
-                                    annotation="multiply the joint value")
+        axis_ctrl = cmds.optionMenu(annotation="axis suffix", changeCommand=lambda *_: apply_mapping())
+        for value in ("X", "Y", "Z"):
+            cmds.menuItem(label=value)
+        cmds.optionMenu(axis_ctrl, edit=True, value=axis)
+        sign_ctrl = cmds.optionMenu(annotation="direction", changeCommand=lambda *_: apply_mapping())
+        cmds.menuItem(label="+1")
+        cmds.menuItem(label="-1")
+        cmds.optionMenu(sign_ctrl, edit=True, value="-1" if scale < 0 else "+1")
+        magnitude_ctrl = cmds.floatField(value=abs(scale), minValue=0.0, precision=4,
+                                         changeCommand=lambda *_: apply_mapping(),
+                                         annotation="scale magnitude")
         cmds.setParent("..")
-        _rows[name] = (attr_ctrl, scale_ctrl)
+        _rows[name] = (attr_ctrl, axis_ctrl, sign_ctrl, magnitude_ctrl)
+        cmds.textField(attr_ctrl, edit=True, changeCommand=lambda *_, joint=name: _sync_axis_from_attr(joint))
     apply_mapping()
 
 
@@ -150,6 +198,9 @@ def _tick(frame):
     if names and names != _state.get("joints"):
         _state["joints"] = names
         _build_rows(names)  # joints come from the dataset, not a hardcoded list
+    if frame.get("kind") == "blacknode.stream-schema":
+        _set_status(f"{len(names)} joints loaded - mapping restored - waiting for Browser play/seek")
+        return
     _apply(frame)
     _set_status(f"streaming - {_state['frames']} frames - {len(JOINT_MAP)}/{len(names)} joints mapped")
 
@@ -167,8 +218,10 @@ def _run(url):
         for text in _ws_frames(sock, rest):
             if not _state["running"]:
                 break
-            _state["frames"] += 1
-            maya.utils.executeInMainThreadWithResult(_tick, json.loads(text))
+            frame = json.loads(text)
+            if frame.get("kind") != "blacknode.stream-schema":
+                _state["frames"] += 1
+            maya.utils.executeInMainThreadWithResult(_tick, frame)
     except Exception as exc:  # noqa: BLE001 - surfaced in the window
         _state["err"] = str(exc)
     finally:
@@ -203,19 +256,19 @@ def show_blacknode_stream_window():
     win = "bnStreamWin"
     if cmds.window(win, exists=True):
         cmds.deleteUI(win)
-    cmds.window(win, title="Blacknode Stream", widthHeight=(400, 460))
+    cmds.window(win, title="Blacknode Dataset Replay", widthHeight=(560, 500))
     main = cmds.columnLayout(adjustableColumn=True, rowSpacing=6, columnOffset=("both", 10))
     cmds.text(label="")
     cmds.textFieldGrp(_URL, label="URL", text="ws://127.0.0.1:8765", columnWidth2=(36, 320))
-    cmds.rowLayout(numberOfColumns=2, columnWidth2=(190, 190),
+    cmds.rowLayout(numberOfColumns=2, columnWidth2=(265, 265),
                    columnAttach=[(1, "both", 3), (2, "both", 3)])
-    cmds.button(label="Connect", height=30,
+    cmds.button(label="Get joints / Connect", height=30,
                 command=lambda *_: start_blacknode_stream(cmds.textFieldGrp(_URL, query=True, text=True)))
     cmds.button(label="Stop", height=30, command=lambda *_: stop_blacknode_stream())
     cmds.setParent("..")
     cmds.text(_STATUS, label="stopped", align="left")
-    cmds.frameLayout(label="Joints (from dataset)", collapsable=False, marginHeight=4)
-    cmds.scrollLayout(height=250)
+    cmds.frameLayout(label="Dataset joint → Maya attribute · axis · direction · scale", collapsable=False, marginHeight=4)
+    cmds.scrollLayout(height=290)
     cmds.columnLayout(_JOINTS_COL, adjustableColumn=True, rowSpacing=3)
     cmds.setParent(main)
     cmds.showWindow(win)

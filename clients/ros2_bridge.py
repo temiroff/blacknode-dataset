@@ -49,6 +49,9 @@ def main() -> None:
             frame = stream.recv_json()
             if frame is None:
                 break
+            if frame.get("kind") == "blacknode.stream-schema":
+                node.get_logger().info(f"loaded {len(frame.get('joint_names') or [])} replay joints")
+                continue
             msg = JointState()
             msg.header.stamp = node.get_clock().now().to_msg()
             msg.name = list(frame.get("joint_names") or [])

@@ -21,7 +21,8 @@ _CATEGORY = "Dataset"
 @node(name="StreamPublisher", live=True, category=_CATEGORY,
       description="Broadcast a stream frame-by-frame to any app over a plain WebSocket. Connect a 'stream' handle "
                   "(from DatasetBrowser or TrajectorySmoother, or a live sample-stream), set action=start, and "
-                  "connect subscribers to stream_url. Read-only: it never commands hardware.",
+                  "connect subscribers to stream_url. Recorded replay follows Dataset Browser play and seek by "
+                  "default. Read-only: it never commands hardware.",
       inputs={"trigger": AnyPort,
               "action": Enum(["status", "start", "stop"], default="status"),
               "run_id": Text(default="stream"),
@@ -32,7 +33,8 @@ _CATEGORY = "Dataset"
               "units": Enum(["radians", "degrees"], default="radians"),
               "fps": Float(default=0),
               "rate": Float(default=1.0),
-              "loop": Bool(default=True)},
+              "loop": Bool(default=True),
+              "sync_to_browser": Bool(default=True)},
       outputs={"stream_url": Text, "streaming": Bool, "clients": Int,
                "status": Dict, "dashboard": Image, "report": Text})
 def stream_publisher(ctx: dict) -> dict:
@@ -50,6 +52,7 @@ def stream_publisher(ctx: dict) -> dict:
                 loop=bool(ctx.get("loop")),
                 source=str(ctx.get("source") or "action"),
                 units=str(ctx.get("units") or "radians"),
+                sync_to_browser=bool(ctx.get("sync_to_browser", True)),
             )
         else:
             status = runtime.control_stream(run_id, action)

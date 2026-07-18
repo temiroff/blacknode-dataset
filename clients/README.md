@@ -11,10 +11,13 @@ than in a Blacknode node.
 1. Add a **DatasetBrowser** node, choose a dataset/episode.
 2. Add a **StreamPublisher** node and wire `DatasetBrowser.stream` into its
    `stream` input.
-3. Set `action = start` and cook it. Its `stream_url` is `ws://127.0.0.1:8765`
-   by default. `source` selects which recorded signal to send (`action`,
-   `observation`, or `leader`). Once streaming, the node shows a **STREAMING**
-   badge with a **Stop stream** button.
+3. Keep `sync_to_browser = true`, set `action = start`, and cook it. Its
+   `stream_url` is `ws://127.0.0.1:8765` by default. `source` selects which
+   recorded signal to send (`action`, `observation`, or `leader`). The publisher
+   opens the connection but does not advance the episode itself: Dataset Browser
+   playback emits each displayed frame, and dragging or clicking its timeline
+   immediately emits the selected pose. Set `sync_to_browser = false` only when
+   an independent looping replay is explicitly wanted.
 
 The node is **read-only** — it never commands hardware. What a subscriber does
 with the values is the subscriber's decision. The `stream` input also accepts a
@@ -26,7 +29,10 @@ To smooth shaky recordings before they reach your app, drop a
 (`DatasetBrowser.stream → TrajectorySmoother.stream → StreamPublisher.stream`). It
 filters the whole episode offline with zero lag; subscribers need no changes.
 Smoothed frames additionally carry a `"smoothing": {"method": ..., "strength": ...}`
-field.
+field. After one initial graph run resolves its replay input, changing smoother
+parameters recomputes only that smoother and hot-swaps the running publisher;
+the WebSocket URL and connected clients remain active. The publisher immediately
+re-emits the current Browser frame with the new smoothing result.
 
 ## Wire schema
 
@@ -53,6 +59,11 @@ Each WebSocket message is one JSON object per frame:
 
 `positions` is `joint_names` resolved against the selected `source`, so most
 clients only need those two arrays plus `units`.
+
+In Browser-synchronized mode, a new subscriber first receives a
+`blacknode.stream-schema` message containing `joint_names`, `source`, and
+`units`, with an empty `positions` list. It is configuration data and must not
+be applied as a pose. The included clients handle it automatically.
 
 ## Included clients
 
@@ -94,9 +105,11 @@ exec(open(r"<repo>/packages/blacknode-dataset/clients/maya_stream.py").read())
 show_blacknode_stream_window()
 ```
 
-Click **Connect**, then fill each joint's Maya `node.attr` (edits apply live;
-blank rows are ignored). `maya_client.py` (imported) is the leaner option when you
-already manage a joint map elsewhere.
+Click **Get joints / Connect**. The publisher sends the joint schema immediately,
+while the Maya rig remains unchanged until Dataset Browser plays or seeks. For
+each joint, enter the Maya `node.attr`, select X/Y/Z and +1/-1 direction, and set
+an optional scale magnitude. Changes are saved automatically in Maya preferences
+and restored the next time the window loads. Blank rows are ignored.
 
 For Isaac Sim, the simplest path is often not a Python client at all: run
 `ros2_bridge.py` to put the stream on a ROS 2 topic and let Isaac Sim's ROS 2
