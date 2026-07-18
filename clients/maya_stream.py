@@ -37,7 +37,6 @@ _STATUS = "bnStreamStatus"
 _JOINTS_COL = "bnStreamJoints"
 _MAPPING_OPTION = "blacknodeDatasetJointMappingV1"
 _PATH_GROUP = "blacknodeDatasetDebugPaths"
-_PATH_MAX_SAMPLES = 600
 
 # Script Editor reload safety: stop the receiver created by a previous exec().
 _previous_state = globals().get("_state")
@@ -198,8 +197,12 @@ def _on_path_changed(name, enabled):
     except Exception:  # noqa: BLE001 - status repaint is optional
         pass
     result = _build_full_trajectory_paths(trajectory)
-    if name in result.get("built", []):
-        _set_status(f"{name} full episode path ready")
+    if result.get("waiting"):
+        _set_status(f"{name} path enabled - waiting for the complete episode trajectory")
+    elif name in result.get("built", []):
+        repaired = int(result.get("repaired") or 0)
+        suffix = f"; ignored/repaired {repaired} unusual value(s)" if repaired else ""
+        _set_status(f"{name} full episode path ready from every frame{suffix}")
     elif name in result.get("stationary", []):
         _set_status(f"{name} path has no world-space movement on mapped node {node}")
     else:
@@ -367,26 +370,82 @@ def _apply_positions(names, positions, units):
             pass
 
 
-def _trajectory_sample_indices(frame_count, max_samples=_PATH_MAX_SAMPLES):
-    """Cover a complete episode with a bounded sample count and exact endpoints."""
-    frame_count = max(0, int(frame_count))
-    max_samples = max(2, int(max_samples))
-    if frame_count <= max_samples:
-        return list(range(frame_count))
-    return sorted({
-        int(round(sample * (frame_count - 1) / float(max_samples - 1)))
-        for sample in range(max_samples)
-    })
+def _sanitize_path_trajectory(trajectory, joint_count):
+    """Repair non-finite and isolated extreme joint values for path drawing only."""
+    rows = []
+    for source in trajectory:
+        source = list(source or [])
+        row = []
+        for joint_index in range(joint_count):
+            try:
+                value = float(source[joint_index])
+                row.append(value if math.isfinite(value) else None)
+            except (IndexError, TypeError, ValueError):
+                row.append(None)
+        rows.append(row)
+    repaired = 0
+    for joint_index in range(joint_count):
+        column = [row[joint_index] for row in rows]
+        finite = [value for value in column if value is not None]
+        if not finite:
+            for row in rows:
+                row[joint_index] = 0.0
+                repaired += 1
+            continue
+        center = _median(finite)
+        mad = _median([abs(value - center) for value in finite])
+        finite_steps = [abs(column[index] - column[index - 1])
+                        for index in range(1, len(column))
+                        if column[index] is not None and column[index - 1] is not None]
+        typical_step = _median(finite_steps) if finite_steps else 0.0
+        step_deviation = (_median([abs(step - typical_step) for step in finite_steps])
+                          if finite_steps else 0.0)
+        jump_limit = max(typical_step * 8.0, typical_step + step_deviation * 8.0, 1e-6)
+        usual_limit = max(mad * 12.0, jump_limit * 4.0, 1e-6)
+        bad = {index for index, value in enumerate(column) if value is None}
+        for index in range(1, len(column) - 1):
+            previous, value, following = column[index - 1:index + 2]
+            if previous is None or value is None or following is None:
+                continue
+            isolated_jump = (abs(value - previous) > jump_limit
+                             and abs(value - following) > jump_limit
+                             and abs(previous - following) <= jump_limit * 2.0)
+            isolated_range = (abs(value - center) > usual_limit
+                              and abs(previous - center) <= usual_limit
+                              and abs(following - center) <= usual_limit)
+            if isolated_jump or isolated_range:
+                bad.add(index)
+        good = [index for index in range(len(column)) if index not in bad and column[index] is not None]
+        for index in sorted(bad):
+            before = next((candidate for candidate in reversed(good) if candidate < index), None)
+            after = next((candidate for candidate in good if candidate > index), None)
+            if before is not None and after is not None:
+                alpha = (index - before) / float(after - before)
+                value = column[before] + (column[after] - column[before]) * alpha
+            elif before is not None:
+                value = column[before]
+            elif after is not None:
+                value = column[after]
+            else:
+                value = center
+            rows[index][joint_index] = float(value)
+            repaired += 1
+    return rows, repaired
 
 
 def _build_full_trajectory_paths(message):
-    """Evaluate a bounded set across the complete episode and build Maya paths."""
+    """Wait for, sanitize, and evaluate every frame in one complete episode."""
     trajectory = list(message.get("trajectory") or [])
     names = list(message.get("joint_names") or [])
     enabled = {name for name, target in JOINT_MAP.items() if target.get("debug_path")}
-    empty = {"built": [], "stationary": [], "errors": {}}
+    empty = {"built": [], "stationary": [], "errors": {}, "waiting": False, "repaired": 0}
+    expected_frames = int(message.get("frames") or len(trajectory))
+    if expected_frames != len(trajectory):
+        return {**empty, "waiting": True}
     if not trajectory or not names or not enabled or _state.get("building_paths"):
         return empty
+    trajectory, repaired = _sanitize_path_trajectory(trajectory, len(names))
+    empty["repaired"] = repaired
     _state["building_paths"] = True
     _state["trajectory"] = message
     saved_values = {}
@@ -410,8 +469,7 @@ def _build_full_trajectory_paths(message):
                     saved_values[attr] = cmds.getAttr(attr)
                 except Exception:  # noqa: BLE001
                     pass
-        for frame_index in _trajectory_sample_indices(len(trajectory)):
-            positions = trajectory[frame_index]
+        for frame_index, positions in enumerate(trajectory):
             _apply_positions(names, positions, message.get("units"))
             for name in enabled:
                 target = JOINT_MAP.get(name) or {}
@@ -425,6 +483,7 @@ def _build_full_trajectory_paths(message):
                 except Exception:  # noqa: BLE001 - one invalid rig node must not block other paths
                     continue
         result = _refresh_debug_paths(force=True)
+        result.update(waiting=False, repaired=repaired)
     finally:
         for attr, value in saved_values.items():
             try:
@@ -466,10 +525,16 @@ def _tick(frame):
         _state["trajectory"] = frame
         if any(target.get("debug_path") for target in JOINT_MAP.values()):
             result = _build_full_trajectory_paths(frame)
-            built = len(result.get("built", []))
-            stationary = len(result.get("stationary", []))
-            errors = len(result.get("errors", {}))
-            suffix = f"{built} path(s) ready, {stationary} stationary, {errors} error(s)"
+            if result.get("waiting"):
+                suffix = (f"waiting for complete episode trajectory "
+                          f"({len(frame.get('trajectory') or [])}/{int(frame.get('frames') or 0)} frames)")
+            else:
+                built = len(result.get("built", []))
+                stationary = len(result.get("stationary", []))
+                errors = len(result.get("errors", {}))
+                repaired = int(result.get("repaired") or 0)
+                suffix = (f"{built} path(s) ready from every frame, {stationary} stationary, "
+                          f"{errors} error(s), {repaired} unusual value(s) repaired")
         else:
             suffix = "enable a Path checkbox to build a full episode path"
         _set_status(f"{len(names)} joints loaded - {suffix}")

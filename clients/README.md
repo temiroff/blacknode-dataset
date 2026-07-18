@@ -121,9 +121,10 @@ motion as a thick red cubic spline. The synchronized publisher sends the complet
 filtered episode range when Maya connects, so path creation does not depend on
 playback. Changing the smoother rebuilds the full paths automatically. The path
 builder rejects non-finite samples and isolated discontinuity spikes before fitting
-the spline. Large episodes are sampled evenly across the complete range, always
-including the exact first and last frames, to keep the one-time Maya evaluation
-responsive. The generated curves are parented under
+the spline. Maya waits until the complete trajectory payload is present, repairs
+non-finite or isolated extreme joint values for visualization only, and evaluates
+every episode frame exactly once. The original dataset remains unchanged. The
+generated curves are parented under
 `blacknodeDatasetDebugPaths`; **Clear debug paths** deletes them. Editing a joint
 mapping evaluates the cached full trajectory again for the new rig target.
 The status line confirms when a curve is ready and identifies a mapped node that
