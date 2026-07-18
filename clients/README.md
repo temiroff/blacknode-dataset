@@ -83,17 +83,20 @@ maya_client.start("ws://127.0.0.1:8765", {
 # maya_client.stop() to end it
 ```
 
-**Prefer a paste-and-run window?** `maya_so101_stream.py` is fully self-contained
-(the WebSocket client is inlined), so it works with plain `exec` and opens a small
-Start/Stop window — no `sys.path` setup:
+**Prefer a paste-and-run window?** `maya_stream.py` is fully self-contained (the
+WebSocket client is inlined), so it works with plain `exec` — no `sys.path` setup —
+and opens a small window. It reads the **joint names from the stream (the
+dataset)**, so it is robot-agnostic: it adds one row per streamed joint for you to
+map to a Maya attribute.
 
 ```python
-exec(open(r"<repo>/packages/blacknode-dataset/clients/maya_so101_stream.py").read())
-show_so101_stream_window()
+exec(open(r"<repo>/packages/blacknode-dataset/clients/maya_stream.py").read())
+show_blacknode_stream_window()
 ```
 
-Edit its `JOINT_MAP` for your rig. `maya_client.py` (imported) is the leaner
-option when you already manage a joint map elsewhere.
+Click **Connect**, then fill each joint's Maya `node.attr` (edits apply live;
+blank rows are ignored). `maya_client.py` (imported) is the leaner option when you
+already manage a joint map elsewhere.
 
 For Isaac Sim, the simplest path is often not a Python client at all: run
 `ros2_bridge.py` to put the stream on a ROS 2 topic and let Isaac Sim's ROS 2
