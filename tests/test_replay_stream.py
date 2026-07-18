@@ -82,8 +82,13 @@ def test_publisher_streams_replay_to_a_subscriber(stubbed):
 
     stream = blacknode_ws.connect(url, timeout=5.0)
     try:
+        schema = stream.recv_json()
+        assert schema["kind"] == "blacknode.stream-schema"
+        assert schema["frames"] == 5
+        assert schema["trajectory"] == [[float(index), float(index) * 2] for index in range(5)]
         frame = stream.recv_json()
         assert frame is not None
+        assert frame["kind"] == "blacknode.episode-frame"
         assert frame["joint_names"] == ["a", "b"]
         assert frame["positions"][1] == frame["positions"][0] * 2
         assert frame["source"] == "action"
@@ -206,6 +211,7 @@ def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     assert "_sanitize_path_trajectory" in source
     assert "for frame_index, positions in enumerate(trajectory)" in source
     assert 'expected_frames != len(trajectory)' in source
+    assert "reload and restart StreamPublisher" in source
     assert "_on_path_changed" in source
     assert "full episode path ready" in source
     assert "path has no world-space movement" in source

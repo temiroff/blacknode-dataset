@@ -140,6 +140,9 @@ a recorded replay (`DatasetBrowser`/`TrajectorySmoother`) or a live
 
 Set `sync_to_browser=false` for an explicit independent replay; in that mode,
 `rate` scales its playback speed and `loop` repeats the episode.
+Every recorded replay mode sends the complete ordered episode trajectory once
+when a subscriber connects. This lets visualization clients build full paths
+before applying playback frames. Live sample streams remain frame-only.
 
 `action=stop`, **Stop all**, or restarting the server ends the stream and closes
 the port.
