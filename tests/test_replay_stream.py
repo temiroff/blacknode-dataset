@@ -210,8 +210,10 @@ def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     assert 'cmds.dgeval(f"{node}.worldMatrix[0]")' in source
     assert "cmds.refresh(suspend=True)" not in source
     assert "cmds.curve" in source
-    assert "degree=3, editPoint=segment, worldSpace=True" in source
+    assert "degree=3, point=segment, worldSpace=True" in source
+    assert "editPoint=segment" not in source
     assert "degree=1, point=segment" not in source
+    assert "_bounds_include(_sample_bounds(segment), curve_bounds)" in source
     assert '("overrideColorRGB", color)' in source
     assert "_PATH_COLORS" in source
     assert '("lineWidth", (4.0,))' in source
@@ -288,6 +290,21 @@ def test_maya_path_discards_short_fragments_around_gaps():
     assert kept == [valid_path]
     assert discarded == 1
     assert minimum >= 8
+
+
+def test_maya_path_bounds_reject_generated_origin_or_distant_geometry():
+    source = (_CLIENTS / "maya_stream.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = [node for node in tree.body
+                 if isinstance(node, ast.FunctionDef) and node.name == "_bounds_include"]
+    namespace = {}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "maya_path_bounds", "exec"), namespace)
+    includes = namespace["_bounds_include"]
+
+    samples = [24.0, 9.0, -7.0, 38.0, 22.0, 3.0]
+    assert includes(samples, [24.1, 9.2, -6.8, 37.8, 21.9, 2.8])
+    assert not includes(samples, [0.0, 0.0, -6.8, 37.8, 21.9, 2.8])
+    assert not includes(samples, [-1775.0, -678.0, -6.8, 120.0, 46.0, 22.0])
 
 
 def test_maya_path_sanitizer_repairs_bad_values_without_dropping_frames():
