@@ -119,9 +119,10 @@ def _build_rows(names):
                        columnWidth3=(120, 170, 44), columnAlign3=("left", "left", "left"),
                        columnAttach=[(1, "both", 2), (2, "both", 2), (3, "both", 2)])
         cmds.text(label=name, align="left")
-        attr_ctrl = cmds.textField(text=f"{name}.rotateZ",
+        attr_ctrl = cmds.textField(text=f"{name}.rotateZ", changeCommand=lambda *_: apply_mapping(),
                                    annotation="Maya node.attribute this joint drives; blank = ignore")
-        scale_ctrl = cmds.textField(text="1", annotation="multiply the joint value")
+        scale_ctrl = cmds.textField(text="1", changeCommand=lambda *_: apply_mapping(),
+                                    annotation="multiply the joint value")
         cmds.setParent("..")
         _rows[name] = (attr_ctrl, scale_ctrl)
     apply_mapping()
@@ -206,12 +207,11 @@ def show_blacknode_stream_window():
     main = cmds.columnLayout(adjustableColumn=True, rowSpacing=6, columnOffset=("both", 10))
     cmds.text(label="")
     cmds.textFieldGrp(_URL, label="URL", text="ws://127.0.0.1:8765", columnWidth2=(36, 320))
-    cmds.rowLayout(numberOfColumns=3, columnWidth3=(126, 126, 126),
-                   columnAttach=[(1, "both", 3), (2, "both", 3), (3, "both", 3)])
-    cmds.button(label="▶ Connect", height=30,
+    cmds.rowLayout(numberOfColumns=2, columnWidth2=(190, 190),
+                   columnAttach=[(1, "both", 3), (2, "both", 3)])
+    cmds.button(label="Connect", height=30,
                 command=lambda *_: start_blacknode_stream(cmds.textFieldGrp(_URL, query=True, text=True)))
-    cmds.button(label="■ Stop", height=30, command=lambda *_: stop_blacknode_stream())
-    cmds.button(label="Apply mapping", height=30, command=lambda *_: apply_mapping())
+    cmds.button(label="Stop", height=30, command=lambda *_: stop_blacknode_stream())
     cmds.setParent("..")
     cmds.text(_STATUS, label="stopped", align="left")
     cmds.frameLayout(label="Joints (from dataset)", collapsable=False, marginHeight=4)
