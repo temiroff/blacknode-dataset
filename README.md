@@ -250,6 +250,19 @@ choosing `action=upload`. Authentication uses the configured account or
 `HF_TOKEN`; credentials are never written into dataset manifests or node
 outputs.
 
+## Before-training smoothing
+
+`HDF5EpisodeExport` and `LeRobotV3Export` take an optional `smoothing` method
+(`none` by default, plus `spline`, `gaussian`, `savgol`, `moving_average`) and a
+`smoothing_strength`. When set, each episode's `observation.state`, `leader`, and
+`action` trajectories are filtered per-episode (zero-lag, never across episode
+boundaries) before writing, so a policy trains on the intended motion rather than
+teleoperation jitter. `spline`/`savgol` need SciPy; the numpy-only methods always
+work. The choice is recorded in the export (`smoothing` attribute in HDF5,
+`smoothing` field in `blacknode-export.json`). With `smoothing=none` the export is
+byte-for-byte unchanged. This is the same zero-lag filter family as the
+`TrajectorySmoother` streaming node, applied here at export time instead.
+
 ## Test
 
 ```powershell

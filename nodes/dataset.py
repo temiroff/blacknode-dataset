@@ -226,15 +226,21 @@ def dataset_validate(ctx: dict) -> dict:
 
 
 @node(name="LeRobotV3Export", category=_CATEGORY,
-      description="Export a validated dataset to LeRobot v3 Parquet/MP4 layout without importing LeRobot.",
-      inputs={"trigger": AnyPort, "dataset": Dict(default={}), "output_path": Text(default=""), "repo_id": Text(default="")},
+      description="Export a validated dataset to LeRobot v3 Parquet/MP4 layout without importing LeRobot. Optional "
+                  "before-training smoothing filters each episode's joint trajectories (zero-lag) so the policy "
+                  "learns intended motion, not teleop jitter.",
+      inputs={"trigger": AnyPort, "dataset": Dict(default={}), "output_path": Text(default=""), "repo_id": Text(default=""),
+              "smoothing": Enum(["none", "spline", "gaussian", "savgol", "moving_average"], default="none"),
+              "smoothing_strength": Float(default=1.0)},
       outputs={"ok": Bool, "export": Dict, "path": Text, "report": Text})
 def lerobot_v3_export(ctx: dict) -> dict:
     try:
         source = storage.resolve_dataset_path(dict(ctx.get("dataset") or {}))
         raw_output = str(ctx.get("output_path") or "").strip()
         output = Path(raw_output).expanduser().resolve() if raw_output else source.parent / f"{source.name}-lerobot-v3"
-        result = storage.export_lerobot_v3(source, output, str(ctx.get("repo_id") or "").strip())
+        result = storage.export_lerobot_v3(source, output, str(ctx.get("repo_id") or "").strip(),
+                                           smoothing=str(ctx.get("smoothing") or "none"),
+                                           smoothing_strength=float(ctx.get("smoothing_strength") or 1.0))
         return {"ok": True, "export": result, "path": result["path"],
                 "report": f"LeRobot v3 export ready: {result['path']}"}
     except Exception as exc:  # noqa: BLE001
@@ -246,7 +252,9 @@ def lerobot_v3_export(ctx: dict) -> dict:
       inputs={"trigger": AnyPort, "action": Enum(["check", "export"], default="check"),
               "dataset": Dict(default={}), "output_path": Text(default=""),
               "include_images": Bool(default=True),
-              "compression": Enum(["gzip", "lzf", "none"], default="gzip")},
+              "compression": Enum(["gzip", "lzf", "none"], default="gzip"),
+              "smoothing": Enum(["none", "spline", "gaussian", "savgol", "moving_average"], default="none"),
+              "smoothing_strength": Float(default=1.0)},
       outputs={"ok": Bool, "exported": Bool, "export": Dict, "path": Text, "report": Text})
 def hdf5_episode_export(ctx: dict) -> dict:
     try:
@@ -266,6 +274,8 @@ def hdf5_episode_export(ctx: dict) -> dict:
             output,
             include_images=bool(ctx.get("include_images", True)),
             compression=str(ctx.get("compression") or "gzip"),
+            smoothing=str(ctx.get("smoothing") or "none"),
+            smoothing_strength=float(ctx.get("smoothing_strength") or 1.0),
         )
         return {"ok": True, "exported": True, "export": result, "path": result["path"],
                 "report": f"HDF5 episode export ready: {result['path']}"}

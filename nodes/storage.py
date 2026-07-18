@@ -39,6 +39,23 @@ try:
 except Exception:  # pragma: no cover
     np = None
 
+from . import filters
+
+
+def _smooth_rows(rows: Any, method: str, strength: float, fps: float) -> Any:
+    """Smooth a per-episode ``[T, J]`` trajectory before export (zero-lag).
+
+    Accepts and returns a numpy array or a list of rows to match the caller. A
+    ``none``/empty method or a missing numpy is a pass-through, so existing
+    exports are byte-for-byte unchanged unless smoothing is explicitly chosen.
+    """
+    method = str(method or "none").lower()
+    if method == "none" or np is None:
+        return rows
+    was_list = not hasattr(rows, "shape")
+    smoothed, _ = filters.smooth_columns(np.asarray(rows, dtype=float), method, float(strength), float(fps))
+    return smoothed.tolist() if was_list else smoothed
+
 DATASET_KIND = "blacknode.episode-dataset"
 DATASET_SCHEMA_VERSION = 1
 
@@ -671,7 +688,8 @@ def _feature_stats(values: list[list[float]]) -> dict[str, Any]:
     }
 
 
-def export_lerobot_v3(path: Path, output: Path, repo_id: str = "") -> dict[str, Any]:
+def export_lerobot_v3(path: Path, output: Path, repo_id: str = "",
+                      smoothing: str = "none", smoothing_strength: float = 1.0) -> dict[str, Any]:
     """Export a LeRobot v3-compatible tree without importing LeRobot."""
     _require_storage_dependencies()
     report = validate(path)
@@ -724,6 +742,8 @@ def export_lerobot_v3(path: Path, output: Path, repo_id: str = "") -> dict[str, 
         action = table.column("action").to_pylist()
         timestamps = [float(value) for value in table.column("timestamp").to_pylist()]
         frame_count = len(timestamps)
+        observation = _smooth_rows(observation, smoothing, smoothing_strength, fps)
+        action = _smooth_rows(action, smoothing, smoothing_strength, fps)
         observation_values.extend(observation)
         action_values.extend(action)
         data_table = pa.table({
@@ -799,8 +819,11 @@ def export_lerobot_v3(path: Path, output: Path, repo_id: str = "") -> dict[str, 
         "repo_id": repo_id,
         "exported_at": _now(),
         "lerobot_codebase_version": "v3.0",
+        "smoothing": str(smoothing or "none").lower(),
+        "smoothing_strength": float(smoothing_strength),
     })
-    return {"ok": True, "path": str(output), "episodes": len(episodes), "frames": global_index, "repo_id": repo_id}
+    return {"ok": True, "path": str(output), "episodes": len(episodes), "frames": global_index,
+            "repo_id": repo_id, "smoothing": str(smoothing or "none").lower()}
 
 
 def _hdf5_column(table: Any, name: str, dtype: Any) -> Any | None:
@@ -857,6 +880,8 @@ def export_hdf5(
     *,
     include_images: bool = True,
     compression: str = "gzip",
+    smoothing: str = "none",
+    smoothing_strength: float = 1.0,
 ) -> dict[str, Any]:
     """Export one ACT-style HDF5 file per saved Blacknode episode."""
     _require_storage_dependencies()
@@ -901,6 +926,8 @@ def export_hdf5(
                 handle.attrs["robot_type"] = str(manifest.get("robot_type") or "")
                 handle.attrs["units"] = str(episode_info.get("units") or "radians")
                 handle.attrs["image_color_space"] = "RGB"
+                handle.attrs["smoothing"] = str(smoothing or "none").lower()
+                handle.attrs["smoothing_strength"] = float(smoothing_strength)
 
                 metadata = handle.create_group("metadata")
                 metadata.create_dataset("joint_names", data=np.asarray(joint_names, dtype=object), dtype=string_dtype)
@@ -913,9 +940,13 @@ def export_hdf5(
                         metadata.attrs[key] = str(value)
 
                 observations = handle.create_group("observations")
-                qpos = np.asarray(table.column("observation.state").to_pylist(), dtype=np.float32)
-                leader = np.asarray(table.column("leader.state").to_pylist(), dtype=np.float32)
-                action = np.asarray(table.column("action").to_pylist(), dtype=np.float32)
+                fps = float(manifest["fps"])
+                qpos = _smooth_rows(np.asarray(table.column("observation.state").to_pylist(), dtype=np.float32),
+                                    smoothing, smoothing_strength, fps).astype(np.float32)
+                leader = _smooth_rows(np.asarray(table.column("leader.state").to_pylist(), dtype=np.float32),
+                                      smoothing, smoothing_strength, fps).astype(np.float32)
+                action = _smooth_rows(np.asarray(table.column("action").to_pylist(), dtype=np.float32),
+                                      smoothing, smoothing_strength, fps).astype(np.float32)
                 observations.create_dataset("qpos", data=qpos)
                 observations.create_dataset("leader", data=leader)
                 handle.create_dataset("action", data=action)
