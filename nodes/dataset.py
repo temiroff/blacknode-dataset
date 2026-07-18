@@ -177,7 +177,8 @@ def dataset_summary(ctx: dict) -> dict:
         summary = storage.summarize(storage.resolve_dataset_path(dict(ctx.get("dataset") or {})))
         return {"summary": summary, "episode_count": int(summary["episode_count"]),
                 "frame_count": int(summary["total_frames"]),
-                "report": f"{summary['episode_count']} episode(s), {summary['total_frames']} frames"}
+                "report": (f"{summary['episode_count']} episode(s), {summary['total_frames']} frames · "
+                           f"camera resolution(s): {summary.get('camera_shapes') or 'unknown'}")}
     except Exception as exc:  # noqa: BLE001
         return {"summary": {}, "episode_count": 0, "frame_count": 0, "report": f"summary FAILED: {exc}"}
 

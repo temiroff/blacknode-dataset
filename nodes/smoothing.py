@@ -21,8 +21,9 @@ _CATEGORY = "Dataset"
 @node(name="TrajectorySmoother", category=_CATEGORY,
       description="Smooth a recorded episode's joint trajectories offline (zero-lag) and emit a new 'stream' handle. "
                   "Wire DatasetBrowser.stream in and this node's stream into StreamPublisher to broadcast smoothed "
-                  "motion. spline (cubic B-spline) and savgol need SciPy; gaussian, moving_average, and one_euro are "
-                  "numpy-only. Read-only; never commands hardware.",
+                  "motion while preserving the exact first and last episode poses. spline (cubic B-spline) and "
+                  "savgol need SciPy; gaussian, moving_average, and one_euro are numpy-only. Read-only; never "
+                  "commands hardware.",
       inputs={"trigger": AnyPort,
               "stream": Dict(default={}),
               "method": Enum(["spline", "gaussian", "savgol", "moving_average", "one_euro", "none"], default="spline"),

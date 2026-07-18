@@ -7,8 +7,10 @@ HTTP server stands in for a live sample-stream, so no dataset files are read.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
+import math
 import socket
 import sys
 import time
@@ -162,6 +164,7 @@ def test_browser_synchronized_publisher_waits_then_emits_play_and_seek(stubbed):
         assert schema["kind"] == "blacknode.stream-schema"
         assert schema["joint_names"] == ["a", "b"]
         assert schema["positions"] == []
+        assert schema["trajectory"] == [[float(index), float(index) * 2] for index in range(5)]
 
         stream._sock.settimeout(0.15)
         with pytest.raises(socket.timeout):
@@ -186,7 +189,102 @@ def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     assert "cmds.optionVar" in source
     assert 'for value in ("X", "Y", "Z")' in source
     assert 'label="-1"' in source
+    assert 'label="Path"' in source
+    assert "cmds.xform(node, query=True, worldSpace=True, translation=True)" in source
+    assert "cmds.curve" in source
+    assert "editPoint=points" in source
+    assert '("overrideColorRGB", (1.0, 0.0, 0.0))' in source
+    assert '("lineWidth", (4.0,))' in source
+    assert "_reject_discontinuity_outliers" in source
+    assert "_build_full_trajectory_paths" in source
+    assert "_on_path_changed" in source
+    assert "full episode path ready" in source
+    assert "path has no world-space movement" in source
+    assert "_drain_pending" in source
+    assert '"latest_frame"' in source
+    assert "stale dropped" in source
+    assert "cmds.scriptJob(idleEvent=_drain_pending" in source
+    assert "executeInMainThreadWithResult" not in source
+    assert "_capture_debug_paths" not in source
+    assert "Clear debug paths" in source
     for client in ("maya_client.py", "ros2_bridge.py", "isaac_lab_client.py"):
         assert 'frame.get("kind") == "blacknode.stream-schema"' in (
             _CLIENTS / client
         ).read_text(encoding="utf-8")
+
+
+def test_maya_path_filter_drops_isolated_spike_but_keeps_sustained_motion():
+    source = (_CLIENTS / "maya_stream.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {"_distance", "_median", "_reject_discontinuity_outliers"}
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    namespace = {"math": math}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "maya_path_filter", "exec"), namespace)
+    reject = namespace["_reject_discontinuity_outliers"]
+
+    spike = [(0, 0, 0), (1, 0, 0), (1000, 1000, 0), (2, 0, 0), (3, 0, 0)]
+    assert reject(spike) == [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                             (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)]
+    sustained = [(0, 0, 0), (1, 0, 0), (100, 0, 0), (101, 0, 0), (102, 0, 0)]
+    assert reject(sustained) == [tuple(float(value) for value in point) for point in sustained]
+
+
+def test_isaac_sim_script_editor_client_is_self_contained_and_safe_for_unmatched_dofs():
+    source = (_CLIENTS / "isaac_sim_stream.py").read_text(encoding="utf-8")
+    assert "show_blacknode_isaac_window" in source
+    assert "omni.ui as ui" in source
+    assert "isaacsim.core.experimental.prims import Articulation" in source
+    assert "set_dof_position_targets" in source
+    assert "articulation.set_dof_position_targets(targets)" in source
+    assert 'frame.get("kind") == "blacknode.stream-schema"' in source
+    assert "targets = current.reshape(-1)" in source
+    assert "ROS 2 and terminal processes are not required" in source
+    assert "Use selected prim" in source
+    assert "type its path" in source
+    assert "Dataset joint mapping" in source
+    assert 'ui.Button("Discover Joints"' in source
+    assert 'ui.Button("Apply Drive Settings"' in source
+    assert 'ui.Label("Stiffness"' in source
+    assert 'ui.Label("Damping"' in source
+    assert 'ui.Label("Max Force"' in source
+    assert "UsdPhysics.DriveAPI.Apply" in source
+    assert '"drive_settings": dict(_drive_settings)' in source
+    assert "per-joint home calibration" in source
+    assert "_joint_mapping" in source
+    assert "numeric * float(mapping.get(\"sign\", 1.0))" in source
+    assert 'float(mapping.get("scale", 1.0))' in source
+    assert 'ui.Label("Motion Scale"' in source
+    assert "Joint Angle" in source
+    assert "Angle Nudge" in source
+    assert "_sync_joint_angle_sliders" in source
+    assert "display_actual = (actual - base) * factor" in source
+    assert "slider.model.set_value(display_actual)" in source
+    assert "_set_joint_angle" in source
+    assert 'angle must be finite' in source
+    assert 'ui.FloatSlider(min=lower * factor, max=upper * factor' in source
+    assert "ui.FloatField(angle_slider.model" in source
+    assert "Set Home Pose" in source
+    assert "_set_home_pose" in source
+    assert "_go_home_pose" in source
+    assert 'ui.Button("Go Home"' in source
+    assert 'ui.Button("Calibrate"' in source
+    assert 'ui.Button("Add to Home Pose"' in source
+    assert 'ui.Button("Save Calibration File"' in source
+    assert 'ui.Button("Load Calibration File"' in source
+    assert "blacknode.isaac-articulation-calibration" in source
+    assert '"home_pose"' in source
+    assert "_begin_home_calibration" in source
+    assert "_cancel_home_calibration" in source
+    assert "_add_to_home_pose" in source
+    assert "previous_home + delta" in source
+    assert "replay motion is held while applying nudges" in source
+    assert "_zero_angle_sliders" in source
+    assert "get_dof_limits" in source
+    assert "Angle units" in source
+    assert "set_string(_PREF_KEY" in source
+    assert "_reapply_current_frame" in source
+    assert "_state[\"last_frame\"] = dict(frame)" in source
+    assert "sim_home" in source
+    assert "dataset_home" in source
+    assert 'width=1360, height=720' in source
+    assert 'ui.ScrollingFrame(height=360)' in source
