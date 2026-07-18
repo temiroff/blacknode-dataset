@@ -82,7 +82,7 @@ def dataset_create(ctx: dict) -> dict:
       inputs={"trigger": AnyPort, "dataset": Dict(default={}), "root": Text(default=""), "dataset_id": Text(default=""),
               "episode_index": Int(default=0), "camera": Text(default=""), "refresh_key": Int(default=0)},
       outputs={"dataset": Dict, "catalog": Dict, "episode": Dict, "video": Video,
-               "replay_token": Text, "episode_path": Text, "video_path": Text,
+               "replay_token": Text, "stream": Dict, "episode_path": Text, "video_path": Text,
                "data_path": Text, "report": Text})
 def dataset_browser(ctx: dict) -> dict:
     try:
@@ -107,15 +107,22 @@ def dataset_browser(ctx: dict) -> dict:
         if episode:
             report += (f"; selected {dataset.get('dataset_id')} episode {episode['episode_index']} · "
                        f"{episode['camera']} · {episode['frames']} frames · {episode['duration_seconds']:.1f}s")
+        stream = runtime.make_replay_stream(
+            token,
+            label=f"{dataset.get('dataset_id', '')} · ep{episode.get('episode_index', 0)} · {episode.get('camera', '')}",
+            frames=int(episode.get("frames") or 0), fps=float(episode.get("fps") or 0),
+            units=str(episode.get("units") or "radians"),
+        ) if token else {}
         return {
             "dataset": dataset, "catalog": catalog, "episode": episode, "video": video,
-            "replay_token": token, "episode_path": str(episode.get("episode_path") or ""),
+            "replay_token": token, "stream": stream,
+            "episode_path": str(episode.get("episode_path") or ""),
             "video_path": str(episode.get("video_path") or ""),
             "data_path": str(episode.get("data_path") or ""), "report": report,
         }
     except Exception as exc:  # noqa: BLE001
         return {"dataset": {}, "catalog": {}, "episode": {}, "video": "", "replay_token": "",
-                "episode_path": "", "video_path": "", "data_path": "",
+                "stream": {}, "episode_path": "", "video_path": "", "data_path": "",
                 "report": f"dataset browser FAILED: {exc}"}
 
 

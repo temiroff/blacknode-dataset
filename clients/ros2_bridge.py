@@ -14,6 +14,16 @@ until you have confirmed the values look right in RViz or an echo.
 from __future__ import annotations
 
 import argparse
+import os
+import sys
+
+# Make this folder importable so `blacknode_ws` resolves when run by path.
+try:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    if _HERE not in sys.path:
+        sys.path.insert(0, _HERE)
+except NameError:
+    pass
 
 import rclpy
 from rclpy.node import Node
@@ -24,7 +34,7 @@ from blacknode_ws import connect
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="ws://127.0.0.1:8765", help="ReplayStreamPublisher stream_url")
+    parser.add_argument("--url", default="ws://127.0.0.1:8765", help="StreamPublisher stream_url")
     parser.add_argument("--topic", default="/joint_commands", help="JointState topic to publish")
     args = parser.parse_args()
 

@@ -71,8 +71,8 @@ def episode(monkeypatch):
 
 
 def test_smoother_node_registered():
-    assert "ReplayTrajectorySmoother" in _NODE_REGISTRY
-    assert _NODE_REGISTRY["ReplayTrajectorySmoother"]._bn_category == "Dataset"
+    assert "TrajectorySmoother" in _NODE_REGISTRY
+    assert _NODE_REGISTRY["TrajectorySmoother"]._bn_category == "Dataset"
 
 
 @pytest.mark.parametrize("method", ["spline", "gaussian", "savgol", "moving_average", "one_euro"])
@@ -88,10 +88,11 @@ def test_smoothing_reduces_jerk_and_mints_token(episode, method):
     assert "smoothing" in frame
 
 
-def test_smoothed_token_streams_through_publisher(episode):
+def test_smoothed_stream_streams_through_publisher(episode):
     info = rt.register_smoothed_replay("raw", "spline", strength=1.0)
-    status = rt.start_replay_stream(run_id="sm", token=info["token"], host="127.0.0.1", port=0,
-                                    fps=60, rate=1.0, loop=True, source="action", units="radians")
+    handle = {"kind": "blacknode.replay-stream", "token": info["token"]}
+    status = rt.start_stream(run_id="sm", stream=handle, host="127.0.0.1", port=0,
+                             fps=60, rate=1.0, loop=True, source="action", units="radians")
     assert status["streaming"] is True
     stream = blacknode_ws.connect(status["stream_url"], timeout=5.0)
     try:
@@ -101,7 +102,7 @@ def test_smoothed_token_streams_through_publisher(episode):
         assert len(frame["positions"]) == 2
     finally:
         stream.close()
-    rt.control_replay_stream("sm", "stop")
+    rt.control_stream("sm", "stop")
 
 
 def test_direct_filter_math_is_zero_lag_and_shorter_jerk():

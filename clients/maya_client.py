@@ -1,33 +1,52 @@
-"""Drive a Maya rig from a Blacknode replay stream.
+"""Drive a Maya rig from a Blacknode stream.
 
-Subscribes to a ReplayStreamPublisher WebSocket and applies each frame's joint
-values to Maya attributes on a background thread. Run it inside Maya (Script
-Editor) or with mayapy alongside blacknode_ws.py:
+Subscribes to a StreamPublisher WebSocket and applies each frame's joint values
+to Maya attributes on a background thread.
 
-    mayapy maya_client.py --url ws://127.0.0.1:8765 --map joint_map.json
+Recommended (inside Maya's Script Editor — Python tab): add this folder to the
+path and import it, then call start() with your joint map. Do NOT use
+exec(open(...)) — that leaves this folder off sys.path so blacknode_ws can't be
+found and gives no argv.
 
-joint_map.json maps each streamed joint name to a Maya attribute and axis, e.g.:
+    import sys
+    sys.path.append(r"<repo>/packages/blacknode-dataset/clients")
+    import maya_client                     # or: importlib.reload(maya_client)
+    maya_client.start("ws://127.0.0.1:8765", {
+        "shoulder_pan":  {"attr": "arm_shoulder.rotateY"},
+        "shoulder_lift": {"attr": "arm_shoulder.rotateX", "scale": -1.0},
+        "gripper":       {"attr": "arm_gripper.translateZ", "scale": 0.01},
+    })
+    # later: maya_client.stop()
 
-    {
-      "shoulder_pan":  {"attr": "arm_shoulder.rotateY"},
-      "shoulder_lift": {"attr": "arm_shoulder.rotateX", "scale": -1.0},
-      "gripper":       {"attr": "arm_gripper.translateZ", "scale": 0.01}
-    }
+Each map entry supports "attr" (required), "scale", and "offset". Streamed values
+are radians by default; rotate.* targets are converted to degrees for you.
 
-Streamed values are radians by default (set units=degrees on the node to change);
-Maya rotate attributes are degrees, so rotate.* targets are converted for you.
+From a shell you can also run: mayapy maya_client.py --url ... --map joint_map.json
 """
 from __future__ import annotations
 
-import argparse
-import json
 import math
+import os
+import sys
 import threading
 
-import maya.cmds as cmds  # available inside Maya / mayapy
-import maya.utils
+# Make this folder importable so `blacknode_ws` resolves even when this file is
+# imported by path or read into Maya. Under exec(open(...)) __file__ is undefined,
+# which is exactly why importing (not exec) is the supported path.
+try:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    if _HERE not in sys.path:
+        sys.path.insert(0, _HERE)
+except NameError:
+    pass
 
-from blacknode_ws import connect
+from blacknode_ws import connect  # noqa: E402
+
+import maya.cmds as cmds  # noqa: E402 - available inside Maya / mayapy
+import maya.utils  # noqa: E402
+
+_stream = None
+_thread = None
 
 
 def _apply(mapping: dict, frame: dict) -> None:
@@ -49,27 +68,52 @@ def _apply(mapping: dict, frame: dict) -> None:
 
 
 def _run(url: str, mapping: dict) -> None:
-    stream = connect(url)
+    global _stream
+    _stream = connect(url)
     try:
         while True:
-            frame = stream.recv_json()
+            frame = _stream.recv_json()
             if frame is None:
                 break
-            # Maya is not thread-safe; marshal the edit onto the main thread.
+            # Maya is not thread-safe; marshal each edit onto the main thread.
             maya.utils.executeInMainThreadWithResult(_apply, mapping, frame)
     finally:
-        stream.close()
+        try:
+            _stream.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _stream = None
+
+
+def start(url: str = "ws://127.0.0.1:8765", joint_map: dict | None = None) -> None:
+    """Start streaming in a background thread. Call stop() to end it."""
+    global _thread
+    if _thread and _thread.is_alive():
+        print("blacknode: stream already running; call maya_client.stop() first")
+        return
+    _thread = threading.Thread(target=_run, args=(url, dict(joint_map or {})), daemon=True,
+                               name="blacknode-replay")
+    _thread.start()
+    print(f"blacknode: streaming {url} into Maya on a background thread")
+
+
+def stop() -> None:
+    if _stream is not None:
+        _stream.close()
+    print("blacknode: stream stopped")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="ws://127.0.0.1:8765", help="ReplayStreamPublisher stream_url")
+    import argparse
+    import json
+    parser = argparse.ArgumentParser(description="Drive a Maya rig from a Blacknode stream")
+    parser.add_argument("--url", default="ws://127.0.0.1:8765", help="StreamPublisher stream_url")
     parser.add_argument("--map", required=True, help="JSON file mapping joint names to Maya attributes")
     args = parser.parse_args()
     with open(args.map, encoding="utf-8") as handle:
-        mapping = json.load(handle)
-    threading.Thread(target=_run, args=(args.url, mapping), daemon=True, name="blacknode-replay").start()
-    print(f"blacknode: streaming {args.url} into Maya on a background thread")
+        start(args.url, json.load(handle))
+    if _thread:
+        _thread.join()
 
 
 if __name__ == "__main__":

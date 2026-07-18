@@ -270,7 +270,7 @@ _recorder_configs: dict[str, dict[str, Any]] = {}
 _replay_media: dict[str, Path] = {}
 _replay_sessions: dict[str, dict[str, Any]] = {}
 _replay_tables: dict[str, Any] = {}
-_publishers: dict[str, "ReplayStreamPublisher"] = {}
+_publishers: dict[str, "StreamPublisher"] = {}
 _lock = threading.RLock()
 
 
@@ -554,8 +554,8 @@ def register_smoothed_replay(source_token: str, method: str, strength: float,
 
     Read-only: it re-reads the recorded frames, filters each joint trajectory,
     and stores an in-memory smoothed episode that ``replay_frame`` serves under a
-    fresh token. Wire that token into ReplayStreamPublisher (or anything that
-    consumes a replay token). Never commands hardware.
+    fresh token. Wire this node's ``stream`` output into StreamPublisher (or
+    anything that consumes a replay stream). Never commands hardware.
     """
     source_token = str(source_token or "")
     with _lock:
@@ -672,8 +672,13 @@ def smoother_outputs(info: dict[str, Any]) -> dict[str, Any]:
               f"(strength {float(info.get('strength') or 0):g}); "
               f"jerk -{float(info.get('jerk_reduction_pct') or 0):.0f}% on "
               f"{info.get('preview', {}).get('joint', '')}{note}")
+    label = f"smoothed · {method}"
     return {
-        "replay_token": str(info.get("token") or ""),
+        "stream": make_replay_stream(
+            str(info.get("token") or ""), label=label,
+            frames=int(info.get("frames") or 0), fps=float(info.get("fps") or 0.0),
+            units=str(info.get("units") or "radians"),
+        ),
         "episode": {
             "frames": int(info.get("frames") or 0),
             "fps": float(info.get("fps") or 0.0),
@@ -688,17 +693,50 @@ def smoother_outputs(info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@dataclass
-class ReplayStreamPublisher:
-    """Walk a saved episode's frames and broadcast each one over a WebSocket.
+def make_replay_stream(token: str, label: str = "", frames: int = 0, fps: float = 0.0,
+                       units: str = "radians") -> dict[str, Any]:
+    """A stream handle wrapping a recorded-episode replay token."""
+    return {
+        "kind": "blacknode.replay-stream",
+        "token": str(token or ""),
+        "label": str(label or ""),
+        "frames": int(frames or 0),
+        "fps": float(fps or 0.0),
+        "units": str(units or "radians"),
+    }
 
-    Read-only: it re-reads recorded frames through ``replay_frame`` and fans them
-    out to any subscriber. It never opens a robot connection or commands motion —
-    driving a robot, rig, or simulator is entirely the receiving client's job.
+
+def parse_stream(stream: Any) -> tuple[str, str, str]:
+    """Return (mode, token, url) for a stream handle, or raise if unrecognized.
+
+    Accepts a ``blacknode.replay-stream`` handle (recorded episode, replayed by
+    walking frames) or a ``blacknode.sample-stream`` handle (a live source polled
+    for its latest sample), so the publisher can stream anything, not just replay.
+    """
+    handle = dict(stream) if isinstance(stream, dict) else {}
+    kind = str(handle.get("kind") or "")
+    if kind == "blacknode.replay-stream" or (not kind and handle.get("token")):
+        return "replay", str(handle.get("token") or ""), ""
+    if kind == "blacknode.sample-stream" or (not kind and handle.get("url")):
+        return "sample", "", str(handle.get("url") or "")
+    raise ValueError("connect a stream handle: a DatasetBrowser/TrajectorySmoother 'stream' "
+                     "output, or a live 'blacknode.sample-stream'")
+
+
+@dataclass
+class StreamPublisher:
+    """Broadcast a stream over a WebSocket to any number of subscribers.
+
+    Two source kinds are supported through the same wire format: a recorded
+    replay (walk episode frames via ``replay_frame``) and a live sample-stream
+    (poll a URL for its latest sample). Read-only either way — it never opens a
+    robot connection or commands motion; the receiving client decides what to do.
     """
 
     run_id: str
+    mode: str
     token: str
+    url: str
     host: str
     port: int
     fps: float
@@ -722,8 +760,46 @@ class ReplayStreamPublisher:
     def start(self) -> None:
         self.server.start()
         self.thread = threading.Thread(target=self._loop, daemon=True,
-                                       name=f"blacknode-replay-stream-{self.run_id}")
+                                       name=f"blacknode-stream-{self.run_id}")
         self.thread.start()
+
+    def _broadcast(self, frame: dict[str, Any], index: int) -> None:
+        names = list(frame.get("joint_names") or [])
+        joints = frame.get(self.source) or {}
+        positions = [float(joints.get(name, 0.0)) for name in names]
+        payload = {
+            **frame,
+            "fps": self.fps,
+            "rate": self.rate,
+            "source": self.source,
+            "units": self.units,
+            "positions": positions,
+            "seq": self.sent,
+            "run_id": self.run_id,
+        }
+        self.server.broadcast(json.dumps(payload))
+        with self.lock:
+            self.frame_index = index
+            self.sent += 1
+            self.last_error = ""
+
+    def _poll_sample(self) -> dict[str, Any]:
+        sample = _get_json(self.url, 2.0)
+        if sample.get("kind") != "blacknode.teleoperation-sample":
+            raise ValueError("sample stream did not return a teleoperation sample")
+        return {
+            "kind": "blacknode.stream-frame",
+            "schema_version": 1,
+            "frame_index": self.sent,
+            "frames": 0,
+            "timestamp": float(sample.get("captured_at_ns") or 0) / 1e9,
+            "captured_at_ns": int(sample.get("captured_at_ns") or 0),
+            "joint_names": list(sample.get("joint_names") or []),
+            "leader": dict(sample.get("leader") or {}),
+            "observation": dict(sample.get("observation") or {}),
+            "action": dict(sample.get("action") or {}),
+            "cameras": {},
+        }
 
     def _loop(self) -> None:
         try:
@@ -731,39 +807,29 @@ class ReplayStreamPublisher:
             deadline = time.monotonic()
             index = 0
             while not self.stop_event.is_set():
-                if self.frames <= 0:
-                    self.stop_event.wait(0.2)
-                    continue
-                frame = replay_frame(self.token, index)
-                if frame is None:
-                    with self.lock:
-                        self.last_error = "replay selection expired; refresh the Dataset Browser"
-                    break
-                names = list(frame.get("joint_names") or [])
-                joints = frame.get(self.source) or {}
-                positions = [float(joints.get(name, 0.0)) for name in names]
-                payload = {
-                    **frame,
-                    "fps": self.fps,
-                    "rate": self.rate,
-                    "source": self.source,
-                    "units": self.units,
-                    "positions": positions,
-                    "seq": self.sent,
-                    "run_id": self.run_id,
-                }
-                self.server.broadcast(json.dumps(payload))
-                with self.lock:
-                    self.frame_index = index
-                    self.sent += 1
-                    self.last_error = ""
-                index += 1
-                if index >= self.frames:
-                    if not self.loop:
+                if self.mode == "replay":
+                    if self.frames <= 0:
+                        self.stop_event.wait(0.2)
+                        continue
+                    frame = replay_frame(self.token, index)
+                    if frame is None:
+                        with self.lock:
+                            self.last_error = "replay selection expired; refresh the Dataset Browser"
                         break
-                    index = 0
-                    with self.lock:
-                        self.loops += 1
+                    self._broadcast(frame, index)
+                    index += 1
+                    if index >= self.frames:
+                        if not self.loop:
+                            break
+                        index = 0
+                        with self.lock:
+                            self.loops += 1
+                else:  # live sample-stream: poll the latest value
+                    try:
+                        self._broadcast(self._poll_sample(), self.sent)
+                    except Exception as exc:  # noqa: BLE001 - a stale poll must not kill the stream
+                        with self.lock:
+                            self.last_error = f"{type(exc).__name__}: {exc}"
                 deadline += period
                 self.stop_event.wait(max(0.0, deadline - time.monotonic()))
                 if deadline < time.monotonic() - period:
@@ -779,6 +845,7 @@ class ReplayStreamPublisher:
             alive = bool(self.thread and self.thread.is_alive())
             return {
                 "run_id": self.run_id,
+                "mode": self.mode,
                 "running": alive,
                 "streaming": alive,
                 "stream_url": f"ws://{self.host}:{self.port}",
@@ -860,26 +927,35 @@ def stream_outputs(status: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def start_replay_stream(*, run_id: str, token: str, host: str, port: int, fps: float,
-                        rate: float, loop: bool, source: str, units: str) -> dict[str, Any]:
-    run_id = str(run_id or "replay_stream").strip() or "replay_stream"
+def start_stream(*, run_id: str, stream: Any, host: str, port: int, fps: float,
+                 rate: float, loop: bool, source: str, units: str) -> dict[str, Any]:
+    run_id = str(run_id or "stream").strip() or "stream"
     source = str(source or "action").strip().lower()
     if source not in {"action", "observation", "leader"}:
         raise ValueError("source must be action, observation, or leader")
+    mode, token, url = parse_stream(stream)
     with _lock:
         existing = _publishers.get(run_id)
         if existing and existing.thread and existing.thread.is_alive():
             return existing.status()
-        session = dict(_replay_sessions.get(str(token or "")) or {})
-    if not session:
-        raise ValueError("replay selection expired; open the Dataset Browser and select an episode first")
-    resolved_fps = float(fps or 0) or float(session.get("fps") or 0) or 30.0
+    resolved_fps = float(fps or 0) or 30.0
+    resolved_units = str(units or "radians")
+    frames, joint_names = 0, []
+    if mode == "replay":
+        with _lock:
+            session = dict(_replay_sessions.get(token) or {})
+        if not session:
+            raise ValueError("replay selection expired; open the Dataset Browser and select an episode first")
+        frames = int(session.get("frames") or 0)
+        joint_names = list(session.get("joint_names") or [])
+        resolved_fps = float(fps or 0) or float(session.get("fps") or 0) or 30.0
+        resolved_units = str(units or session.get("units") or "radians")
     server = wsserver.WsBroadcastServer(host, int(port))
-    publisher = ReplayStreamPublisher(
-        run_id=run_id, token=str(token), host=str(host or "127.0.0.1"), port=int(port),
+    publisher = StreamPublisher(
+        run_id=run_id, mode=mode, token=token, url=url,
+        host=str(host or "127.0.0.1"), port=int(port),
         fps=resolved_fps, rate=max(0.01, float(rate or 1.0)), loop=bool(loop), source=source,
-        units=str(units or session.get("units") or "radians"), server=server,
-        frames=int(session.get("frames") or 0), joint_names=list(session.get("joint_names") or []),
+        units=resolved_units, server=server, frames=frames, joint_names=joint_names,
     )
     try:
         publisher.start()
@@ -891,8 +967,8 @@ def start_replay_stream(*, run_id: str, token: str, host: str, port: int, fps: f
     return publisher.status()
 
 
-def control_replay_stream(run_id: str, action: str) -> dict[str, Any]:
-    run_id = str(run_id or "replay_stream").strip() or "replay_stream"
+def control_stream(run_id: str, action: str) -> dict[str, Any]:
+    run_id = str(run_id or "stream").strip() or "stream"
     action = str(action or "status").strip().lower()
     with _lock:
         publisher = _publishers.get(run_id)
@@ -954,7 +1030,7 @@ def runtime_status() -> dict[str, Any]:
         publishers = [publisher.status() for publisher in _publishers.values()]
     node_outputs.extend({
         "run_id": item["run_id"],
-        "node_type": "ReplayStreamPublisher",
+        "node_type": "StreamPublisher",
         "outputs": stream_outputs(item),
     } for item in publishers)
     active = any(item["running"] for item in runs) or any(item["running"] for item in publishers)

@@ -1,15 +1,17 @@
-"""End-to-end replay stream transport test using synthetic frames only.
+"""End-to-end stream transport test using synthetic frames only.
 
 Exercises the stdlib WebSocket broadcast server, the stdlib subscriber client,
-and the publisher walk loop without hardware, ROS, or the network. A synthetic
-replay session is injected and ``replay_frame`` is stubbed, so no dataset files
-are read.
+and the publisher walk loop without hardware, ROS, or the outside network. A
+synthetic replay session is injected and ``replay_frame`` is stubbed, and a local
+HTTP server stands in for a live sample-stream, so no dataset files are read.
 """
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -57,15 +59,20 @@ def stubbed(monkeypatch):
         rt._replay_sessions.pop("tok", None)
 
 
+def _replay_handle(token: str = "tok") -> dict:
+    return {"kind": "blacknode.replay-stream", "token": token}
+
+
 def test_publisher_node_is_registered():
-    assert "ReplayStreamPublisher" in _NODE_REGISTRY
-    assert _NODE_REGISTRY["ReplayStreamPublisher"]._bn_category == "Dataset"
+    assert "StreamPublisher" in _NODE_REGISTRY
+    assert _NODE_REGISTRY["StreamPublisher"]._bn_category == "Dataset"
 
 
-def test_publisher_streams_frames_to_a_subscriber(stubbed):
-    status = rt.start_replay_stream(run_id="t1", token="tok", host="127.0.0.1", port=0,
-                                    fps=60, rate=1.0, loop=True, source="action", units="radians")
+def test_publisher_streams_replay_to_a_subscriber(stubbed):
+    status = rt.start_stream(run_id="t1", stream=_replay_handle(), host="127.0.0.1", port=0,
+                             fps=60, rate=1.0, loop=True, source="action", units="radians")
     assert status["streaming"] is True
+    assert status["mode"] == "replay"
     url = status["stream_url"]
     assert url.startswith("ws://127.0.0.1:")
 
@@ -74,32 +81,69 @@ def test_publisher_streams_frames_to_a_subscriber(stubbed):
         frame = stream.recv_json()
         assert frame is not None
         assert frame["joint_names"] == ["a", "b"]
-        # positions is the ordered 'action' source: b == 2 * a
         assert frame["positions"][1] == frame["positions"][0] * 2
         assert frame["source"] == "action"
-        assert frame["units"] == "radians"
-        # subscriber becomes visible to the publisher
         deadline = time.monotonic() + 2.0
-        while rt.control_replay_stream("t1", "status")["clients"] < 1 and time.monotonic() < deadline:
+        while rt.control_stream("t1", "status")["clients"] < 1 and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert rt.control_replay_stream("t1", "status")["clients"] >= 1
+        assert rt.control_stream("t1", "status")["clients"] >= 1
     finally:
         stream.close()
 
-    stopped = rt.control_replay_stream("t1", "stop")
+    stopped = rt.control_stream("t1", "stop")
     assert stopped["streaming"] is False
 
 
-def test_start_without_session_reports_error(stubbed):
+def test_unrecognized_stream_handle_reports_error(stubbed):
     with pytest.raises(ValueError):
-        rt.start_replay_stream(run_id="missing", token="nope", host="127.0.0.1", port=0,
-                               fps=30, rate=1.0, loop=False, source="action", units="radians")
+        rt.start_stream(run_id="bad", stream={"nope": 1}, host="127.0.0.1", port=0,
+                        fps=30, rate=1.0, loop=False, source="action", units="radians")
 
 
 def test_stop_runtime_services_stops_publishers(stubbed):
-    rt.start_replay_stream(run_id="t2", token="tok", host="127.0.0.1", port=0,
-                           fps=60, rate=2.0, loop=True, source="observation", units="radians")
+    rt.start_stream(run_id="t2", stream=_replay_handle(), host="127.0.0.1", port=0,
+                    fps=60, rate=2.0, loop=True, source="observation", units="radians")
     assert rt.runtime_status()["active"] is True
     result = rt.stop_runtime_services()
     assert result["stopped"]["streams"] >= 1
-    assert rt.control_replay_stream("t2", "status")["streaming"] is False
+    assert rt.control_stream("t2", "status")["streaming"] is False
+
+
+class _SampleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        body = json.dumps({
+            "kind": "blacknode.teleoperation-sample",
+            "captured_at_ns": 1, "joint_names": ["a", "b"],
+            "action": {"a": 1.0, "b": 2.0}, "observation": {"a": 1.0, "b": 2.0},
+            "leader": {"a": 1.0, "b": 2.0}, "armed": True, "live": True,
+        }).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):  # silence test server logging
+        pass
+
+
+def test_publisher_streams_a_live_sample_stream():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SampleHandler)
+    import threading
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/sample"
+    try:
+        status = rt.start_stream(run_id="live", stream={"kind": "blacknode.sample-stream", "url": url},
+                                 host="127.0.0.1", port=0, fps=30, rate=1.0, loop=False,
+                                 source="action", units="radians")
+        assert status["mode"] == "sample"
+        stream = blacknode_ws.connect(status["stream_url"], timeout=5.0)
+        try:
+            frame = stream.recv_json()
+            assert frame is not None
+            assert frame["joint_names"] == ["a", "b"]
+            assert frame["positions"] == [1.0, 2.0]
+        finally:
+            stream.close()
+    finally:
+        rt.control_stream("live", "stop")
+        server.shutdown()

@@ -29,9 +29,9 @@
       },
       "pos": [100, 100],
       "inputs": ["trigger", "dataset", "root", "dataset_id", "episode_index", "camera", "refresh_key"],
-      "outputs": ["dataset", "catalog", "episode", "video", "replay_token", "episode_path", "video_path", "data_path", "report"],
+      "outputs": ["dataset", "catalog", "episode", "video", "replay_token", "stream", "episode_path", "video_path", "data_path", "report"],
       "input_types": {"trigger": "Any", "dataset": "Dict", "root": "Text", "dataset_id": "Text", "episode_index": "Int", "camera": "Text", "refresh_key": "Int"},
-      "output_types": {"dataset": "Dict", "catalog": "Dict", "episode": "Dict", "video": "Video", "replay_token": "Text", "episode_path": "Text", "video_path": "Text", "data_path": "Text", "report": "Text"},
+      "output_types": {"dataset": "Dict", "catalog": "Dict", "episode": "Dict", "video": "Video", "replay_token": "Text", "stream": "Dict", "episode_path": "Text", "video_path": "Text", "data_path": "Text", "report": "Text"},
       "input_defaults": {"dataset": {}, "root": "", "dataset_id": "", "episode_index": 0, "camera": "", "refresh_key": 0}
     }
   },

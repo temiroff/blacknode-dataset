@@ -1,11 +1,12 @@
-"""Stream a saved episode replay to external apps over a plain WebSocket.
+"""Broadcast a stream to external apps over a plain WebSocket.
 
-``ReplayStreamPublisher`` is the transport-neutral producer: it walks the frames
-of the episode currently selected in the Dataset Browser and broadcasts each one
-as JSON to every connected subscriber. It is strictly read-only — it re-reads
-recorded frames and never opens a robot connection or commands motion. Receiving
-apps (ROS 2, Maya, Isaac Lab, ...) run a small subscriber that maps the joint
-values into their own rig/topic/prim; example clients ship under ``clients/``.
+``StreamPublisher`` is the transport-neutral producer. Connect any stream handle
+into its ``stream`` input — a recorded replay from a DatasetBrowser or
+TrajectorySmoother, or a live ``blacknode.sample-stream`` — and it broadcasts each
+frame as JSON to every connected subscriber. It is strictly read-only: it never
+opens a robot connection or commands motion. Receiving apps (ROS 2, Maya, Isaac
+Sim, ...) run a small subscriber that maps the joint values into their own rig /
+topic / prim; example clients ship under ``clients/``.
 """
 from __future__ import annotations
 
@@ -17,14 +18,14 @@ from . import runtime
 _CATEGORY = "Dataset"
 
 
-@node(name="ReplayStreamPublisher", live=True, category=_CATEGORY,
-      description="Broadcast the selected Dataset Browser replay episode frame-by-frame to any app over a plain "
-                  "WebSocket. Read-only: it streams recorded joint data and never commands hardware. Wire "
-                  "replay_token from a DatasetBrowser node, set action=start, and connect subscribers to stream_url.",
+@node(name="StreamPublisher", live=True, category=_CATEGORY,
+      description="Broadcast a stream frame-by-frame to any app over a plain WebSocket. Connect a 'stream' handle "
+                  "(from DatasetBrowser or TrajectorySmoother, or a live sample-stream), set action=start, and "
+                  "connect subscribers to stream_url. Read-only: it never commands hardware.",
       inputs={"trigger": AnyPort,
               "action": Enum(["status", "start", "stop"], default="status"),
-              "run_id": Text(default="replay_stream"),
-              "replay_token": Text(default=""),
+              "run_id": Text(default="stream"),
+              "stream": Dict(default={}),
               "host": Text(default="127.0.0.1"),
               "port": Int(default=8765),
               "source": Enum(["action", "observation", "leader"], default="action"),
@@ -34,14 +35,14 @@ _CATEGORY = "Dataset"
               "loop": Bool(default=True)},
       outputs={"stream_url": Text, "streaming": Bool, "clients": Int,
                "status": Dict, "dashboard": Image, "report": Text})
-def replay_stream_publisher(ctx: dict) -> dict:
+def stream_publisher(ctx: dict) -> dict:
     action = str(ctx.get("action") or "status").strip().lower()
-    run_id = str(ctx.get("run_id") or "replay_stream").strip() or "replay_stream"
+    run_id = str(ctx.get("run_id") or "stream").strip() or "stream"
     try:
         if action == "start":
-            status = runtime.start_replay_stream(
+            status = runtime.start_stream(
                 run_id=run_id,
-                token=str(ctx.get("replay_token") or ""),
+                stream=ctx.get("stream") or {},
                 host=str(ctx.get("host") or "127.0.0.1"),
                 port=int(ctx.get("port") or 8765),
                 fps=float(ctx.get("fps") or 0),
@@ -51,7 +52,7 @@ def replay_stream_publisher(ctx: dict) -> dict:
                 units=str(ctx.get("units") or "radians"),
             )
         else:
-            status = runtime.control_replay_stream(run_id, action)
+            status = runtime.control_stream(run_id, action)
         return runtime.stream_outputs(status)
     except Exception as exc:  # noqa: BLE001 - surfaced in node report
         return runtime.stream_outputs({

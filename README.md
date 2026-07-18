@@ -38,8 +38,8 @@ not affect dataset contents or portability.
 | --- | --- |
 | `DatasetCreate` | Create or reopen a dataset with a stable task, FPS, robot type, and metadata. |
 | `DatasetBrowser` | Pick a storage root, dataset, episode, and camera, replay or trim it, and inspect synchronized robot and timing data. |
-| `ReplayTrajectorySmoother` | Smooth a recorded episode's joint trajectories offline (zero-lag B-spline / Gaussian / Savitzky-Golay / One-Euro) and emit a new `replay_token`. Read-only. |
-| `ReplayStreamPublisher` | Broadcast the selected replay episode frame-by-frame over a plain WebSocket so ROS 2, Maya, Isaac Lab, or any other app can subscribe. Read-only; never commands hardware. |
+| `TrajectorySmoother` | Smooth a recorded episode's joint trajectories offline (zero-lag B-spline / Gaussian / Savitzky-Golay / One-Euro) and emit a new `stream` handle. Read-only. |
+| `StreamPublisher` | Broadcast a `stream` (recorded replay or a live sample-stream) frame-by-frame over a plain WebSocket so ROS 2, Maya, Isaac Sim, or any other app can subscribe. Read-only; never commands hardware. |
 | `DatasetCameraStreamList` | Collect any number of camera stream handles through dynamic sockets. |
 | `EpisodeRecorder` | Start, pause, resume, save/finalize, stop, or discard a recording and render its live camera and capture-health dashboard. |
 | `EpisodeReplay` | Play any saved episode camera video and expose its task, timing, joints, camera, and exact artifact paths. |
@@ -116,17 +116,18 @@ errors, the recorder pauses and reports the last error. The saved timeline uses
 `frame_index / fps`; source capture and wall-clock timestamps remain attached
 to the robot and camera samples.
 
-## Stream a replay to external apps
+## Stream to external apps
 
-`ReplayStreamPublisher` fans a saved episode out to any number of apps over a
-plain WebSocket, so the same recorded demonstration can drive ROS 2, Maya, Isaac
-Lab, or anything else at once. It is transport-neutral and **read-only**: it
-re-reads recorded frames through the same replay path the browser uses and never
-opens a robot connection or commands motion. What a subscriber does with the
-values is the subscriber's responsibility.
+`StreamPublisher` fans a stream out to any number of apps over a plain WebSocket,
+so the same source can drive ROS 2, Maya, Isaac Sim, or anything else at once. It
+is transport-neutral and **read-only**: it never opens a robot connection or
+commands motion. What a subscriber does with the values is the subscriber's
+responsibility. Its `stream` input accepts a `stream` handle from any producer —
+a recorded replay (`DatasetBrowser`/`TrajectorySmoother`) or a live
+`blacknode.sample-stream` — so it streams anything, not just replay.
 
-1. Load `templates/replay-stream.json`, or wire `DatasetBrowser.replay_token`
-   into a `ReplayStreamPublisher`.
+1. Load `templates/replay-stream.json`, or wire `DatasetBrowser.stream`
+   into a `StreamPublisher`.
 2. Select a dataset and episode in the browser.
 3. Set the publisher's `action` to `start` and cook it. `stream_url` is
    `ws://127.0.0.1:8765` by default. `source` chooses which recorded signal to
@@ -141,11 +142,11 @@ the port.
 
 ### Smooth shaky trajectories before streaming
 
-Insert a `ReplayTrajectorySmoother` between the browser and the publisher
-(`DatasetBrowser.replay_token → ReplayTrajectorySmoother.replay_token →
-ReplayStreamPublisher.replay_token`) to calm jittery recordings before they drive
-an app. Because replay has the whole episode available, the filters are
-**non-causal and zero-lag** — the smoothed motion has no added latency:
+Insert a `TrajectorySmoother` between the browser and the publisher
+(`DatasetBrowser.stream → TrajectorySmoother.stream → StreamPublisher.stream`) to
+calm jittery recordings before they drive an app. Because replay has the whole
+episode available, the filters are **non-causal and zero-lag** — the smoothed
+motion has no added latency:
 
 | `method` | Filter | Needs |
 | --- | --- | --- |

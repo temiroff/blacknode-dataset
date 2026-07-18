@@ -9,7 +9,7 @@
   },
   "metadata": {
     "template": true,
-    "description": "Select a dataset episode, optionally smooth its shaky trajectories with a zero-lag B-spline filter, then broadcast it frame-by-frame over a WebSocket so ROS 2, Maya, Isaac Lab, or any other app can subscribe. Read-only: it streams recorded joint data and never commands hardware. Set the smoother method (or 'none' to bypass) and the publisher action to start, then connect a client from packages/blacknode-dataset/clients to stream_url.",
+    "description": "Select a dataset episode, optionally smooth its shaky trajectories with a zero-lag B-spline filter, then broadcast it frame-by-frame over a WebSocket so ROS 2, Maya, Isaac Sim, or any other app can subscribe. Read-only: it streams recorded joint data and never commands hardware. Set the smoother method (or 'none' to bypass) and the publisher action to start, then connect a client from packages/blacknode-dataset/clients to stream_url.",
     "color": "#8b5cf6",
     "required_packages": [
       "blacknode-dataset"
@@ -29,35 +29,35 @@
       },
       "pos": [60, 120],
       "inputs": ["trigger", "dataset", "root", "dataset_id", "episode_index", "camera", "refresh_key"],
-      "outputs": ["dataset", "catalog", "episode", "video", "replay_token", "episode_path", "video_path", "data_path", "report"],
+      "outputs": ["dataset", "catalog", "episode", "video", "replay_token", "stream", "episode_path", "video_path", "data_path", "report"],
       "input_types": {"trigger": "Any", "dataset": "Dict", "root": "Text", "dataset_id": "Text", "episode_index": "Int", "camera": "Text", "refresh_key": "Int"},
-      "output_types": {"dataset": "Dict", "catalog": "Dict", "episode": "Dict", "video": "Video", "replay_token": "Text", "episode_path": "Text", "video_path": "Text", "data_path": "Text", "report": "Text"},
+      "output_types": {"dataset": "Dict", "catalog": "Dict", "episode": "Dict", "video": "Video", "replay_token": "Text", "stream": "Dict", "episode_path": "Text", "video_path": "Text", "data_path": "Text", "report": "Text"},
       "input_defaults": {"dataset": {}, "root": "", "dataset_id": "", "episode_index": 0, "camera": "", "refresh_key": 0}
     },
     "smoother": {
       "id": "smoother",
-      "type": "ReplayTrajectorySmoother",
+      "type": "TrajectorySmoother",
       "params": {
-        "replay_token": "",
+        "stream": {},
         "method": "spline",
         "strength": 1.0,
         "preview_source": "action",
         "preview_joint": ""
       },
       "pos": [560, 160],
-      "inputs": ["trigger", "replay_token", "method", "strength", "preview_source", "preview_joint"],
-      "outputs": ["replay_token", "episode", "preview", "report"],
-      "input_types": {"trigger": "Any", "replay_token": "Text", "method": "Text", "strength": "Float", "preview_source": "Text", "preview_joint": "Text"},
-      "output_types": {"replay_token": "Text", "episode": "Dict", "preview": "Image", "report": "Text"},
-      "input_defaults": {"replay_token": "", "method": "spline", "strength": 1.0, "preview_source": "action", "preview_joint": ""}
+      "inputs": ["trigger", "stream", "method", "strength", "preview_source", "preview_joint"],
+      "outputs": ["stream", "episode", "preview", "report"],
+      "input_types": {"trigger": "Any", "stream": "Dict", "method": "Text", "strength": "Float", "preview_source": "Text", "preview_joint": "Text"},
+      "output_types": {"stream": "Dict", "episode": "Dict", "preview": "Image", "report": "Text"},
+      "input_defaults": {"stream": {}, "method": "spline", "strength": 1.0, "preview_source": "action", "preview_joint": ""}
     },
     "publisher": {
       "id": "publisher",
-      "type": "ReplayStreamPublisher",
+      "type": "StreamPublisher",
       "params": {
         "action": "status",
-        "run_id": "replay_stream",
-        "replay_token": "",
+        "run_id": "stream",
+        "stream": {},
         "host": "127.0.0.1",
         "port": 8765,
         "source": "action",
@@ -67,25 +67,25 @@
         "loop": true
       },
       "pos": [1060, 200],
-      "inputs": ["trigger", "action", "run_id", "replay_token", "host", "port", "source", "units", "fps", "rate", "loop"],
+      "inputs": ["trigger", "action", "run_id", "stream", "host", "port", "source", "units", "fps", "rate", "loop"],
       "outputs": ["stream_url", "streaming", "clients", "status", "dashboard", "report"],
-      "input_types": {"trigger": "Any", "action": "Text", "run_id": "Text", "replay_token": "Text", "host": "Text", "port": "Int", "source": "Text", "units": "Text", "fps": "Float", "rate": "Float", "loop": "Bool"},
+      "input_types": {"trigger": "Any", "action": "Text", "run_id": "Text", "stream": "Dict", "host": "Text", "port": "Int", "source": "Text", "units": "Text", "fps": "Float", "rate": "Float", "loop": "Bool"},
       "output_types": {"stream_url": "Text", "streaming": "Bool", "clients": "Int", "status": "Dict", "dashboard": "Image", "report": "Text"},
-      "input_defaults": {"action": "status", "run_id": "replay_stream", "replay_token": "", "host": "127.0.0.1", "port": 8765, "source": "action", "units": "radians", "fps": 0, "rate": 1.0, "loop": true}
+      "input_defaults": {"action": "status", "run_id": "stream", "stream": {}, "host": "127.0.0.1", "port": 8765, "source": "action", "units": "radians", "fps": 0, "rate": 1.0, "loop": true}
     }
   },
   "edges": [
     {
       "from": "browser",
-      "from_port": "replay_token",
+      "from_port": "stream",
       "to": "smoother",
-      "to_port": "replay_token"
+      "to_port": "stream"
     },
     {
       "from": "smoother",
-      "from_port": "replay_token",
+      "from_port": "stream",
       "to": "publisher",
-      "to_port": "replay_token"
+      "to_port": "stream"
     }
   ]
 }

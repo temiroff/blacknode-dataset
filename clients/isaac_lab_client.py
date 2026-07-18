@@ -14,6 +14,16 @@ uses the standard ArticulationView API; swap in your asset path and joint order.
 from __future__ import annotations
 
 import argparse
+import os
+import sys
+
+# Make this folder importable so `blacknode_ws` resolves when run by path.
+try:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    if _HERE not in sys.path:
+        sys.path.insert(0, _HERE)
+except NameError:
+    pass
 
 import torch  # Isaac Lab ships torch
 from blacknode_ws import connect
@@ -44,7 +54,7 @@ def order_positions(robot, frame: dict) -> list[float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="ws://127.0.0.1:8765", help="ReplayStreamPublisher stream_url")
+    parser.add_argument("--url", default="ws://127.0.0.1:8765", help="StreamPublisher stream_url")
     args = parser.parse_args()
 
     robot = build_articulation()
