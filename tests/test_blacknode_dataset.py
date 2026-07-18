@@ -27,8 +27,8 @@ from blacknode.workflow import validate_workflow
 
 
 EXPECTED = {
-    "DatasetCameraStreamList", "DatasetCreate", "EpisodeRecorder", "EpisodeDatasetSummary", "EpisodeDatasetValidate",
-    "LeRobotV3Export", "HDF5EpisodeExport", "HuggingFaceDatasetUpload",
+    "DatasetCameraStreamList", "DatasetCreate", "DatasetBrowser", "EpisodeRecorder", "EpisodeDatasetSummary", "EpisodeDatasetValidate",
+    "EpisodeReplay", "LeRobotV3Export", "HDF5EpisodeExport", "HuggingFaceDatasetUpload",
 }
 
 
@@ -67,6 +67,20 @@ def test_episode_recorder_dashboard_is_a_renderable_svg_image():
     svg = base64.b64decode(result["dashboard"][len(prefix):]).decode("utf-8")
     assert svg.startswith('<svg xmlns="http://www.w3.org/2000/svg"')
     assert "STOPPED" in svg
+    assert "Waiting for first camera frame" in svg
+    assert "SOURCE AGE" in svg
+
+
+def test_episode_recorder_reports_exact_stale_robot_age(tmp_path: Path):
+    recorder = runtime.EpisodeRecorder(
+        run_id="stale-contract-test", dataset_path=tmp_path, robot_stream={}, cameras=[],
+        require_armed=True, stale_after=0.5, request_timeout=0.5,
+        work_path=tmp_path, episode_index=0, fps=30, task="test",
+    )
+    sample = {**_sample(1), "captured_at_ns": time.time_ns() - 2_000_000_000}
+
+    with pytest.raises(ValueError, match=r"robot sample is stale \(2\.00s > 0\.50s\)"):
+        recorder._validate_robot(sample, time.time_ns())
 
 
 def test_template_validates():
@@ -102,6 +116,31 @@ def test_native_save_validate_and_lerobot_v3_export(tmp_path: Path):
     saved = storage.save_episode(path, "run-one")
     assert saved["frames"] == 3
     assert storage.validate(path)["ok"]
+    replay = _NODE_REGISTRY["EpisodeReplay"]({"dataset": dataset, "episode_index": 0, "camera": "wrist"})
+    assert replay["video"].startswith("/api/dataset/media/")
+    assert replay["replay"]["frames"] == 3
+    assert replay["episode_path"].endswith("episode-000000")
+    assert Path(replay["video_path"]).is_file()
+    assert Path(replay["data_path"]).is_file()
+    assert runtime.replay_media_path(replay["video"].rsplit("/", 1)[-1]) == Path(replay["video_path"])
+    token = replay["replay"]["replay_token"]
+    frame = runtime.replay_frame(token, 2)
+    assert frame["frame_index"] == 2
+    assert frame["observation"] == pytest.approx({"shoulder": 0.0, "gripper": 0.1})
+    assert frame["action"] == pytest.approx({"shoulder": 0.1, "gripper": 0.2})
+    assert frame["leader"] == pytest.approx({"shoulder": 0.1, "gripper": 0.2})
+    browser = _NODE_REGISTRY["DatasetBrowser"]({
+        "root": str(tmp_path), "dataset_id": "pick-cube", "episode_index": 0, "camera": "wrist",
+    })
+    assert browser["catalog"]["dataset_count"] == 1
+    assert browser["dataset"]["dataset_id"] == "pick-cube"
+    assert browser["video"].startswith("/api/dataset/media/")
+    assert browser["catalog"]["frame_url"].startswith("/api/dataset/frame/")
+    connected_browser = _NODE_REGISTRY["DatasetBrowser"]({
+        "dataset": dataset, "root": "", "dataset_id": "", "episode_index": 0, "camera": "wrist",
+    })
+    assert connected_browser["catalog"]["root"] == str(tmp_path.resolve())
+    assert connected_browser["dataset"]["dataset_id"] == "pick-cube"
     assert pq.read_table(path / "episodes/episode-000000/data.parquet").num_rows == 3
     native_table = pq.read_table(path / "episodes/episode-000000/data.parquet")
     assert native_table.column("recorded_at_ns").to_pylist() == [0, 1, 2]
@@ -135,6 +174,61 @@ def test_native_save_validate_and_lerobot_v3_export(tmp_path: Path):
             assert episode.attrs["image_color_space"] == "RGB"
 
 
+def test_trim_replay_keeps_selected_frame_and_synchronizes_every_artifact(tmp_path: Path):
+    dataset = storage.create_dataset("trim-review", root=str(tmp_path), task="Trim review", fps=10)
+    path = storage.resolve_dataset_path(dataset)
+    work, _, _ = storage.begin_episode(path, "trim-run")
+    for index in range(5):
+        storage.append_frame(work, {
+            "frame_index": index, "timestamp": index / 10.0, "recorded_at_ns": index,
+            "task": "Trim review", "robot": _sample(index),
+            "cameras": {"wrist": {"sequence": index, "captured_at_ns": index}},
+        }, {"wrist": _jpeg(index * 35)})
+    storage.save_episode(path, "trim-run")
+
+    replay = storage.episode_replay(dataset, 0, "wrist")
+    token = runtime.register_episode_replay(replay)
+    trimmed = runtime.trim_replay_episode(token, 2, "before")
+
+    assert trimmed["source_frames"] == 5
+    assert trimmed["removed_frames"] == 2
+    assert trimmed["frames"] == 3
+    assert runtime.replay_frame(token, 0) is None  # destructive edits expire stale replay sessions
+
+    episode_path = path / "episodes/episode-000000"
+    table = pq.read_table(episode_path / "data.parquet")
+    assert table.column("frame_index").to_pylist() == [0, 1, 2]
+    assert table.column("timestamp").to_pylist() == pytest.approx([0.0, 0.1, 0.2])
+    assert table.column("sample_sequence").to_pylist() == [2, 3, 4]
+    assert table.column("camera.wrist.sequence").to_pylist() == [2, 3, 4]
+
+    episode_info = json.loads((episode_path / "episode.json").read_text(encoding="utf-8"))
+    assert episode_info["frames"] == 3
+    assert episode_info["cameras"]["wrist"]["frames"] == 3
+    assert episode_info["trim_history"][-1]["kept_start"] == 2
+    manifest = json.loads((path / "dataset.json").read_text(encoding="utf-8"))
+    assert manifest["episodes"][0]["frames"] == 3
+    assert storage.summarize(path)["total_frames"] == 3
+    assert storage.validate(path)["ok"]
+
+    capture = cv2.VideoCapture(str(episode_path / "cameras/wrist.mp4"))
+    try:
+        assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 3
+    finally:
+        capture.release()
+
+    refreshed = storage.episode_replay(dataset, 0, "wrist")
+    refreshed_token = runtime.register_episode_replay(refreshed)
+    assert refreshed_token != token
+    cut_after = runtime.trim_replay_episode(refreshed_token, 1, "after")
+    assert cut_after["removed_frames"] == 1
+    assert cut_after["frames"] == 2
+    final_table = pq.read_table(episode_path / "data.parquet")
+    assert final_table.column("sample_sequence").to_pylist() == [2, 3]
+    assert final_table.column("frame_index").to_pylist() == [0, 1]
+    assert storage.validate(path)["ok"]
+
+
 def test_hdf5_node_check_is_non_mutating(tmp_path: Path):
     dataset = storage.create_dataset("empty", root=str(tmp_path), task="Empty", fps=10)
     result = _NODE_REGISTRY["HDF5EpisodeExport"]({"action": "check", "dataset": dataset})
@@ -152,6 +246,12 @@ def test_stop_preserves_incomplete_and_discard_removes_it(tmp_path: Path):
     path = storage.resolve_dataset_path(dataset)
     storage.begin_episode(path, "interrupted")
     assert storage.summarize(path)["incomplete"] == ["interrupted"]
+    recorder_status = _NODE_REGISTRY["EpisodeRecorder"]({
+        "action": "status", "run_id": "interrupted", "dataset": dataset,
+    })
+    assert recorder_status["status"]["recoverable"] is True
+    assert recorder_status["frame_count"] == 0
+    assert "discard it before recording again" in recorder_status["report"]
     assert storage.discard_episode(path, "interrupted")
     assert storage.summarize(path)["incomplete"] == []
 
@@ -206,10 +306,27 @@ def test_recorder_captures_streams_and_saves(tmp_path: Path):
         live_status = runtime.runtime_status()
         assert live_status["node_outputs"][0]["node_type"] == "EpisodeRecorder"
         assert live_status["node_outputs"][0]["outputs"]["recording"] is True
-        assert live_status["node_outputs"][0]["outputs"]["dashboard"].startswith("data:image/svg+xml;base64,")
-        result = runtime.control_recorder("live", "save")
-        assert result["saved"]
-        assert result["episode"]["frames"] >= 2
+        dashboard_image = live_status["node_outputs"][0]["outputs"]["dashboard"]
+        assert dashboard_image.startswith("data:image/svg+xml;base64,")
+        dashboard_svg = base64.b64decode(dashboard_image.split(",", 1)[1]).decode("utf-8")
+        assert "data:image/jpeg;base64," in dashboard_svg
+        assert "wrist" in dashboard_svg
+        assert "frames" in dashboard_svg
+        assert live_status["managed_runs"][0]["capture_rate_hz"] > 0
+        runtime.configure_recorder(
+            run_id="live", dataset=dataset,
+            robot_stream={"kind": "blacknode.sample-stream", "url": base + "/sample"},
+            camera_stream={"kind": "blacknode.frame-stream", "stream_id": "wrist", "snapshot_url": base + "/frame"},
+            camera_streams=[], require_armed=True, stale_after=0.5, request_timeout=0.5,
+        )
+        result = runtime.control_configured_recorder("live", "save")
+        assert result["status"]["saved"]
+        assert result["status"]["episode"]["frames"] >= 2
+        saved_count = result["frame_count"]
+        time.sleep(0.1)
+        assert runtime.control_recorder("live", "status")["frame_count"] == 0
+        assert result["status"]["saved_path"].endswith("episode-000000")
+        assert saved_count >= 2
         assert storage.validate(storage.resolve_dataset_path(dataset))["ok"]
     finally:
         runtime.stop_runtime_services()

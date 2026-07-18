@@ -1,0 +1,112 @@
+"""Trajectory smoother: offline zero-lag filtering of a recorded episode.
+
+Injects a synthetic noisy episode (a clean sine plus jitter) and checks that the
+smoother reduces shakiness, mints a new replay token, and that the token streams
+cleanly through the publisher. No hardware, ROS, or network required.
+"""
+from __future__ import annotations
+
+import importlib.util
+import math
+import sys
+from pathlib import Path
+
+import pytest
+
+import blacknode  # noqa: F401 - triggers package discovery
+from blacknode.node import _NODE_REGISTRY
+from blacknode.pkg.blacknode_dataset import filters, runtime as rt
+
+_CLIENTS = Path(__file__).resolve().parents[1] / "clients"
+sys.path.insert(0, str(_CLIENTS))
+_spec = importlib.util.spec_from_file_location("blacknode_ws", _CLIENTS / "blacknode_ws.py")
+blacknode_ws = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(blacknode_ws)
+
+_JOINTS = ["a", "b"]
+_FRAMES = 120
+
+
+def _noisy_frames():
+    frames = []
+    for i in range(_FRAMES):
+        clean = math.sin(i * 0.08)
+        jitter = 0.25 * math.sin(i * 2.3) * (1 if i % 2 else -1)  # high-freq shake
+        value = clean + jitter
+        frames.append({
+            "kind": "blacknode.episode-frame", "frame_index": i, "frames": _FRAMES,
+            "timestamp": i / 60.0, "joint_names": _JOINTS,
+            "action": {"a": value, "b": value * 0.5},
+            "observation": {"a": value, "b": value * 0.5},
+            "leader": {"a": value, "b": value * 0.5},
+            "cameras": {},
+        })
+    return frames
+
+
+@pytest.fixture
+def episode(monkeypatch):
+    frames = _noisy_frames()
+    original = rt.replay_frame
+
+    def fake_replay_frame(token, index):
+        # smoothed tokens carry in-memory frames; serve those via the real code path
+        with rt._lock:
+            session = dict(rt._replay_sessions.get(str(token or "")) or {})
+        if session.get("smoothed_frames") is not None:
+            return original(token, index)
+        return dict(frames[min(max(0, int(index)), len(frames) - 1)])
+
+    monkeypatch.setattr(rt, "replay_frame", fake_replay_frame)
+    with rt._lock:
+        rt._replay_sessions["raw"] = {
+            "frames": _FRAMES, "fps": 60, "units": "radians",
+            "joint_names": _JOINTS, "task": "synthetic",
+        }
+    yield
+    rt.stop_runtime_services()
+    with rt._lock:
+        for key in [k for k in rt._replay_sessions if k in {"raw"} or rt._replay_sessions[k].get("source_token") == "raw"]:
+            rt._replay_sessions.pop(key, None)
+
+
+def test_smoother_node_registered():
+    assert "ReplayTrajectorySmoother" in _NODE_REGISTRY
+    assert _NODE_REGISTRY["ReplayTrajectorySmoother"]._bn_category == "Dataset"
+
+
+@pytest.mark.parametrize("method", ["spline", "gaussian", "savgol", "moving_average", "one_euro"])
+def test_smoothing_reduces_jerk_and_mints_token(episode, method):
+    info = rt.register_smoothed_replay("raw", method, strength=1.0, preview_source="action")
+    assert info["token"] and info["token"] != "raw"
+    # the synthetic signal is deliberately shaky; every filter should calm it
+    assert info["jerk_reduction_pct"] > 10.0
+    # the new token serves smoothed frames of the same length
+    frame = rt.replay_frame(info["token"], 3)
+    assert frame is not None
+    assert frame["joint_names"] == _JOINTS
+    assert "smoothing" in frame
+
+
+def test_smoothed_token_streams_through_publisher(episode):
+    info = rt.register_smoothed_replay("raw", "spline", strength=1.0)
+    status = rt.start_replay_stream(run_id="sm", token=info["token"], host="127.0.0.1", port=0,
+                                    fps=60, rate=1.0, loop=True, source="action", units="radians")
+    assert status["streaming"] is True
+    stream = blacknode_ws.connect(status["stream_url"], timeout=5.0)
+    try:
+        frame = stream.recv_json()
+        assert frame is not None
+        assert frame["joint_names"] == _JOINTS
+        assert len(frame["positions"]) == 2
+    finally:
+        stream.close()
+    rt.control_replay_stream("sm", "stop")
+
+
+def test_direct_filter_math_is_zero_lag_and_shorter_jerk():
+    import numpy as np
+    arr = np.array([[math.sin(i * 0.1) + (0.2 if i % 2 else -0.2)] for i in range(80)])
+    smoothed, effective = filters.smooth_columns(arr, "gaussian", strength=1.0, fps=60)
+    assert smoothed.shape == arr.shape  # zero-lag: same length, no trimming
+    assert filters.jerk_rms(smoothed) < filters.jerk_rms(arr)

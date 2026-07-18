@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import statistics
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -65,6 +67,11 @@ def resolve_dataset_path(dataset: dict[str, Any] | str | Path) -> Path:
     if not raw:
         raise ValueError("dataset path is required")
     return Path(raw).expanduser().resolve()
+
+
+def incomplete_episode_path(path: Path, run_id: str) -> Path:
+    """Return the stable journal directory for a recorder run."""
+    return path / "incomplete" / _slug(run_id)
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -138,7 +145,7 @@ def create_dataset(
 def begin_episode(path: Path, run_id: str) -> tuple[Path, int, dict[str, Any]]:
     manifest = load_manifest(path)
     episode_index = len(manifest.get("episodes") or [])
-    work = path / "incomplete" / _slug(run_id)
+    work = incomplete_episode_path(path, run_id)
     if work.exists():
         raise ValueError(f"incomplete episode already exists for run_id={run_id}; save, discard, or recover it")
     (work / "cameras").mkdir(parents=True)
@@ -243,6 +250,21 @@ def _encode_camera(images: list[Path], output: Path, fps: int) -> dict[str, Any]
         raise RuntimeError(f"could not decode camera frame {images[0]}")
     height, width = first.shape[:2]
     output.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg = _ffmpeg_executable()
+    if ffmpeg:
+        command = [
+            ffmpeg, "-y", "-v", "error", "-framerate", str(int(fps)),
+            "-start_number", "0", "-i", str(images[0].parent / "frame-%06d.jpg"),
+            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output),
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        if completed.returncode == 0 and output.is_file() and output.stat().st_size > 0:
+            return {
+                "width": width, "height": height, "channels": 3, "frames": len(images),
+                "codec": "h264", "pixel_format": "yuv420p", "has_audio": False,
+            }
+        output.unlink(missing_ok=True)
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), float(fps), (width, height))
     if not writer.isOpened():
         raise RuntimeError(f"could not open MP4 encoder for {output}")
@@ -262,9 +284,52 @@ def _encode_camera(images: list[Path], output: Path, fps: int) -> dict[str, Any]
     }
 
 
+def _ffmpeg_executable() -> str:
+    executable = shutil.which("ffmpeg")
+    if executable:
+        return executable
+    try:
+        import imageio_ffmpeg
+        return str(imageio_ffmpeg.get_ffmpeg_exe() or "")
+    except Exception:
+        return ""
+
+
+def browser_video_path(replay: dict[str, Any]) -> Path:
+    """Return an H.264 playback file, transcoding old mp4v episodes into cache."""
+    source = Path(str(replay.get("video_path") or "")).resolve()
+    codec = str((replay.get("camera_info") or {}).get("codec") or "").lower()
+    if codec in {"h264", "avc", "avc1", "vp8", "vp9", "av1"}:
+        return source
+    ffmpeg = _ffmpeg_executable()
+    if not ffmpeg:
+        return source
+    stat = source.stat()
+    cache_key = f"{source}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8")
+    import hashlib
+    cache_root = Path(tempfile.gettempdir()) / "blacknode-dataset-replay"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    target = cache_root / f"{hashlib.sha256(cache_key).hexdigest()[:24]}.mp4"
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+    temp = target.with_suffix(".tmp.mp4")
+    command = [
+        ffmpeg, "-y", "-v", "error", "-i", str(source), "-an",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(temp),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0 or not temp.is_file() or temp.stat().st_size <= 0:
+        temp.unlink(missing_ok=True)
+        detail = (completed.stderr or completed.stdout or "unknown ffmpeg error").strip()
+        raise RuntimeError(f"could not prepare browser-compatible episode video: {detail}")
+    temp.replace(target)
+    return target
+
+
 def save_episode(path: Path, run_id: str) -> dict[str, Any]:
     _require_storage_dependencies()
-    work = path / "incomplete" / _slug(run_id)
+    work = incomplete_episode_path(path, run_id)
     frames = read_frames(work)
     if not frames:
         raise ValueError("cannot save an episode with zero frames")
@@ -332,8 +397,127 @@ def save_episode(path: Path, run_id: str) -> dict[str, Any]:
     return episode_info
 
 
+def trim_episode(path: Path, episode_index: int, keep_start: int, keep_end: int) -> dict[str, Any]:
+    """Atomically keep one inclusive frame range across Parquet and every camera."""
+    _require_storage_dependencies()
+    path = Path(path).resolve()
+    manifest = load_manifest(path)
+    episodes = list(manifest.get("episodes") or [])
+    index = int(episode_index)
+    if index < 0 or index >= len(episodes):
+        raise ValueError(f"episode_index {index} is unavailable")
+    entry = dict(episodes[index])
+    final = (path / str(entry.get("path") or "")).resolve()
+    if path not in final.parents:
+        raise ValueError("episode path escapes the dataset")
+    info = json.loads((final / "episode.json").read_text(encoding="utf-8"))
+    source_table = pq.read_table(final / "data.parquet")
+    total = int(source_table.num_rows)
+    start = int(keep_start)
+    end = int(keep_end)
+    if total <= 0 or start < 0 or end >= total or start > end:
+        raise ValueError(f"invalid trim range {start}..{end} for {total} frames")
+    if start == 0 and end == total - 1:
+        raise ValueError("trim range keeps the complete episode")
+    count = end - start + 1
+    fps = max(1, int(info.get("fps") or manifest.get("fps") or 1))
+    temp = final.parent / f".{final.name}.trim-tmp"
+    backup = final.parent / f".{final.name}.trim-backup"
+    for scratch in (temp, backup):
+        if scratch.exists():
+            shutil.rmtree(scratch)
+    temp.mkdir(parents=True)
+    try:
+        table = source_table.slice(start, count)
+        for column, values in (
+            ("frame_index", list(range(count))),
+            ("timestamp", [frame / float(fps) for frame in range(count)]),
+        ):
+            position = table.schema.get_field_index(column)
+            if position >= 0:
+                field = table.schema.field(position)
+                table = table.set_column(position, field, pa.array(values, type=field.type))
+        pq.write_table(table, temp / "data.parquet", compression="snappy")
+
+        camera_info: dict[str, Any] = {}
+        for camera, previous in sorted((info.get("cameras") or {}).items()):
+            source_video = final / "cameras" / f"{camera}.mp4"
+            capture = cv2.VideoCapture(str(source_video))
+            frame_dir = temp / ".frames" / camera
+            frame_dir.mkdir(parents=True)
+            images: list[Path] = []
+            source_index = 0
+            try:
+                while source_index <= end:
+                    ok, image = capture.read()
+                    if not ok:
+                        break
+                    if source_index >= start:
+                        image_path = frame_dir / f"frame-{len(images):06d}.jpg"
+                        if not cv2.imwrite(str(image_path), image):
+                            raise RuntimeError(f"could not write trimmed camera frame {image_path}")
+                        images.append(image_path)
+                    source_index += 1
+            finally:
+                capture.release()
+            if len(images) != count:
+                raise RuntimeError(f"camera {camera} decoded {len(images)} trimmed frames; expected {count}")
+            camera_info[camera] = {
+                **dict(previous or {}),
+                **_encode_camera(images, temp / "cameras" / f"{camera}.mp4", fps),
+            }
+        shutil.rmtree(temp / ".frames", ignore_errors=True)
+
+        trimmed_at = _now()
+        updated_info = {
+            **info,
+            "frames": count,
+            "duration_seconds": count / float(fps),
+            "cameras": camera_info,
+            "trimmed_at": trimmed_at,
+            "trim_history": [
+                *list(info.get("trim_history") or []),
+                {"source_frames": total, "kept_start": start, "kept_end": end, "result_frames": count, "trimmed_at": trimmed_at},
+            ],
+        }
+        _atomic_json(temp / "episode.json", updated_info)
+
+        final.replace(backup)
+        try:
+            temp.replace(final)
+            entry.update({"frames": count, "duration_seconds": count / float(fps), "trimmed_at": trimmed_at})
+            episodes[index] = entry
+            manifest["episodes"] = episodes
+            manifest["updated_at"] = trimmed_at
+            if len(episodes) == 1:
+                manifest.setdefault("features", {})["cameras"] = camera_info
+            _atomic_json(path / "dataset.json", manifest)
+        except Exception:
+            if final.exists():
+                shutil.rmtree(final)
+            backup.replace(final)
+            raise
+        shutil.rmtree(backup)
+        return {
+            "ok": True,
+            "dataset_path": str(path),
+            "episode_path": str(final),
+            "episode_index": index,
+            "source_frames": total,
+            "removed_frames": total - count,
+            "frames": count,
+            "duration_seconds": count / float(fps),
+            "kept_start": start,
+            "kept_end": end,
+        }
+    except Exception:
+        if temp.exists():
+            shutil.rmtree(temp)
+        raise
+
+
 def discard_episode(path: Path, run_id: str) -> bool:
-    work = path / "incomplete" / _slug(run_id)
+    work = incomplete_episode_path(path, run_id)
     if not work.exists():
         return False
     shutil.rmtree(work)
@@ -351,6 +535,91 @@ def summarize(path: Path) -> dict[str, Any]:
         "cameras": sorted(((manifest.get("features") or {}).get("cameras") or {}).keys()),
         "incomplete": sorted(item.name for item in (path / "incomplete").iterdir() if item.is_dir()),
         "episodes": episodes,
+    }
+
+
+def catalog(root: str = "") -> dict[str, Any]:
+    """List valid Blacknode datasets beneath one user-selected storage root."""
+    base = Path(root).expanduser().resolve() if str(root or "").strip() else default_home().resolve()
+    datasets: list[dict[str, Any]] = []
+    invalid: list[dict[str, str]] = []
+    if base.is_dir():
+        for candidate in sorted((item for item in base.iterdir() if item.is_dir()), key=lambda item: item.name.lower()):
+            if not (candidate / "dataset.json").is_file():
+                continue
+            try:
+                datasets.append(summarize(candidate))
+            except Exception as exc:  # noqa: BLE001 - invalid entries are reported without hiding valid datasets
+                invalid.append({"path": str(candidate), "error": f"{type(exc).__name__}: {exc}"})
+    return {
+        "kind": "blacknode.dataset-catalog",
+        "schema_version": 1,
+        "root": str(base),
+        "datasets": datasets,
+        "dataset_count": len(datasets),
+        "invalid": invalid,
+    }
+
+
+def browse_dataset(root: str = "", dataset_id: str = "", episode_index: int = 0,
+                   camera: str = "") -> dict[str, Any]:
+    """Resolve a catalog selection into a complete read-only episode preview."""
+    result = catalog(root)
+    datasets = list(result["datasets"])
+    requested = str(dataset_id or "").strip()
+    selected = next((item for item in datasets if item.get("dataset_id") == requested), None)
+    if selected is None and datasets:
+        selected = datasets[0]
+    result["selected_dataset"] = selected or {}
+    result["selected_dataset_id"] = str((selected or {}).get("dataset_id") or "")
+    result["selected_episode"] = {}
+    if selected and selected.get("episodes"):
+        available = len(selected["episodes"])
+        index = min(max(0, int(episode_index)), available - 1)
+        replay = episode_replay({"path": selected["path"]}, index, camera)
+        result["selected_episode"] = replay
+    return result
+
+
+def episode_replay(dataset: dict[str, Any], episode_index: int, camera: str = "") -> dict[str, Any]:
+    """Resolve one saved episode and camera video for read-only playback."""
+    path = resolve_dataset_path(dataset)
+    manifest = load_manifest(path)
+    episodes = list(manifest.get("episodes") or [])
+    index = int(episode_index)
+    if index < 0 or index >= len(episodes):
+        raise ValueError(f"episode_index {index} is unavailable; dataset has {len(episodes)} saved episode(s)")
+    entry = dict(episodes[index])
+    episode_path = (path / str(entry.get("path") or "")).resolve()
+    if path not in episode_path.parents:
+        raise ValueError("episode path escapes the dataset")
+    info = json.loads((episode_path / "episode.json").read_text(encoding="utf-8"))
+    cameras = sorted(str(name) for name in (info.get("cameras") or {}))
+    selected = str(camera or "").strip() or (cameras[0] if cameras else "")
+    if selected not in cameras:
+        raise ValueError(f"camera {selected!r} is unavailable; choose one of: {', '.join(cameras) or 'none'}")
+    video_path = (episode_path / "cameras" / f"{selected}.mp4").resolve()
+    if not video_path.is_file() or episode_path not in video_path.parents:
+        raise ValueError(f"saved camera video is missing: {video_path}")
+    return {
+        "kind": "blacknode.episode-replay",
+        "schema_version": 1,
+        "dataset_path": str(path),
+        "episode_path": str(episode_path),
+        "video_path": str(video_path),
+        "data_path": str(episode_path / "data.parquet"),
+        "episode_index": index,
+        "camera": selected,
+        "camera_info": dict((info.get("cameras") or {}).get(selected) or {}),
+        "cameras": cameras,
+        "frames": int(info.get("frames") or entry.get("frames") or 0),
+        "fps": int(info.get("fps") or manifest.get("fps") or 0),
+        "duration_seconds": float(info.get("duration_seconds") or entry.get("duration_seconds") or 0.0),
+        "joint_names": list(info.get("joint_names") or []),
+        "units": str(info.get("units") or ""),
+        "robot": dict(info.get("robot") or {}),
+        "task": str(info.get("task") or entry.get("task") or ""),
+        "saved_at": str(info.get("saved_at") or entry.get("saved_at") or ""),
     }
 
 

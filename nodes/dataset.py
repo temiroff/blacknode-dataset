@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from blacknode.node import Any as AnyPort
-from blacknode.node import Bool, Dict, Enum, Float, Image, Int, List, Text, node
+from blacknode.node import Bool, Dict, Enum, Float, Image, Int, List, Text, Video, node
 
 from . import runtime, storage
 
@@ -77,6 +77,48 @@ def dataset_create(ctx: dict) -> dict:
         return {"dataset": {}, "path": "", "summary": {}, "report": f"dataset create FAILED: {exc}"}
 
 
+@node(name="DatasetBrowser", category=_CATEGORY,
+      description="Browse datasets and episodes, replay and trim a selected camera, and inspect synchronized robot observations, actions, leader state, timing, and artifact paths.",
+      inputs={"trigger": AnyPort, "dataset": Dict(default={}), "root": Text(default=""), "dataset_id": Text(default=""),
+              "episode_index": Int(default=0), "camera": Text(default=""), "refresh_key": Int(default=0)},
+      outputs={"dataset": Dict, "catalog": Dict, "episode": Dict, "video": Video,
+               "replay_token": Text, "episode_path": Text, "video_path": Text,
+               "data_path": Text, "report": Text})
+def dataset_browser(ctx: dict) -> dict:
+    try:
+        connected_dataset = dict(ctx.get("dataset") or {})
+        connected_path = Path(str(connected_dataset.get("path") or "")).expanduser()
+        root = str(ctx.get("root") or "").strip()
+        if not root and connected_path.name:
+            root = str(connected_path.parent)
+        dataset_id = str(ctx.get("dataset_id") or "").strip() or str(connected_dataset.get("dataset_id") or "")
+        catalog = storage.browse_dataset(
+            root, dataset_id,
+            int(ctx.get("episode_index") or 0), str(ctx.get("camera") or ""),
+        )
+        dataset = dict(catalog.get("selected_dataset") or {})
+        episode = dict(catalog.get("selected_episode") or {})
+        token = runtime.register_episode_replay(episode) if episode else ""
+        video = f"/api/dataset/media/{token}" if token else ""
+        catalog["replay_token"] = token
+        catalog["video"] = video
+        catalog["frame_url"] = f"/api/dataset/frame/{token}" if token else ""
+        report = f"{catalog['dataset_count']} dataset(s) in {catalog['root']}"
+        if episode:
+            report += (f"; selected {dataset.get('dataset_id')} episode {episode['episode_index']} · "
+                       f"{episode['camera']} · {episode['frames']} frames · {episode['duration_seconds']:.1f}s")
+        return {
+            "dataset": dataset, "catalog": catalog, "episode": episode, "video": video,
+            "replay_token": token, "episode_path": str(episode.get("episode_path") or ""),
+            "video_path": str(episode.get("video_path") or ""),
+            "data_path": str(episode.get("data_path") or ""), "report": report,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"dataset": {}, "catalog": {}, "episode": {}, "video": "", "replay_token": "",
+                "episode_path": "", "video_path": "", "data_path": "",
+                "report": f"dataset browser FAILED: {exc}"}
+
+
 @node(name="EpisodeRecorder", live=True, category=_CATEGORY,
       description="Record synchronized teleoperation samples and camera frames into a recoverable episode journal.",
       inputs={"trigger": AnyPort, "action": Enum(["status", "start", "pause", "resume", "save", "finalize", "stop", "discard"], default="status"),
@@ -91,6 +133,12 @@ def episode_recorder(ctx: dict) -> dict:
     run_id = str(ctx.get("run_id") or "episode_recorder").strip() or "episode_recorder"
     action = str(ctx.get("action") or "status").strip().lower()
     try:
+        runtime.configure_recorder(
+            run_id=run_id, dataset=dict(ctx.get("dataset") or {}),
+            robot_stream=dict(ctx.get("robot_stream") or {}), camera_stream=dict(ctx.get("camera_stream") or {}),
+            camera_streams=list(ctx.get("camera_streams") or []), require_armed=bool(ctx.get("require_armed", True)),
+            stale_after=float(ctx.get("stale_after") or 0.5), request_timeout=float(ctx.get("request_timeout") or 1.0),
+        )
         if action == "start":
             status = runtime.start_recorder(
                 run_id=run_id, dataset=dict(ctx.get("dataset") or {}),
@@ -99,19 +147,12 @@ def episode_recorder(ctx: dict) -> dict:
                 stale_after=float(ctx.get("stale_after") or 0.5), request_timeout=float(ctx.get("request_timeout") or 1.0))
         else:
             status = runtime.control_recorder(run_id, action)
+            if (action == "status" and not status.get("running") and ctx.get("dataset")):
+                status = runtime.recoverable_episode_status(dict(ctx.get("dataset") or {}), run_id) or status
             if (not status.get("running") and status.get("last_error") == "recorder is not running"
                     and action in {"save", "finalize", "discard"} and ctx.get("dataset")):
                 status = runtime.recover_episode(dict(ctx.get("dataset") or {}), run_id, action)
-        dataset = dict(ctx.get("dataset") or {})
-        state = "recording" if status.get("recording") else "paused" if status.get("paused") else "stopped"
-        return {"running": bool(status.get("running")), "recording": bool(status.get("recording")),
-                "paused": bool(status.get("paused")), "episode_index": int(status.get("episode_index") or 0),
-                "frame_count": int(status.get("frame_count") or 0),
-                "dropped_frames": int(status.get("dropped_frames") or 0),
-                "duration_seconds": float(status.get("duration_seconds") or 0.0), "dataset": dataset,
-                "status": status, "dashboard": _dashboard(status),
-                "report": f"episode recorder {state}: {status.get('frame_count', 0)} frames"
-                          + (f"; {status['last_error']}" if status.get("last_error") else "")}
+        return runtime.recorder_outputs(status, dict(ctx.get("dataset") or {}))
     except Exception as exc:  # noqa: BLE001
         status = {"run_id": run_id, "running": False, "recording": False, "paused": False,
                   "frame_count": 0, "dropped_frames": 0, "last_error": str(exc)}
@@ -132,6 +173,36 @@ def dataset_summary(ctx: dict) -> dict:
                 "report": f"{summary['episode_count']} episode(s), {summary['total_frames']} frames"}
     except Exception as exc:  # noqa: BLE001
         return {"summary": {}, "episode_count": 0, "frame_count": 0, "report": f"summary FAILED: {exc}"}
+
+
+@node(name="EpisodeReplay", category=_CATEGORY,
+      description="Replay a saved episode camera video with recorded task, timing, joint, and storage metadata. Playback never commands a robot.",
+      inputs={"trigger": AnyPort, "dataset": Dict(default={}), "episode_index": Int(default=0),
+              "camera": Text(default="")},
+      outputs={"video": Video, "replay": Dict, "episode_path": Text, "video_path": Text,
+               "data_path": Text, "report": Text})
+def episode_replay(ctx: dict) -> dict:
+    try:
+        replay = storage.episode_replay(
+            dict(ctx.get("dataset") or {}), int(ctx.get("episode_index") or 0), str(ctx.get("camera") or ""),
+        )
+        token = runtime.register_episode_replay(replay)
+        replay["replay_token"] = token
+        replay["frame_url"] = f"/api/dataset/frame/{token}"
+        return {
+            "video": f"/api/dataset/media/{token}",
+            "replay": replay,
+            "episode_path": replay["episode_path"],
+            "video_path": replay["video_path"],
+            "data_path": replay["data_path"],
+            "report": (
+                f"replay episode {replay['episode_index']} · {replay['camera']} · "
+                f"{replay['frames']} frames · {replay['duration_seconds']:.1f}s · {replay['episode_path']}"
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"video": "", "replay": {}, "episode_path": "", "video_path": "", "data_path": "",
+                "report": f"episode replay FAILED: {exc}"}
 
 
 @node(name="EpisodeDatasetValidate", category=_CATEGORY, description="Validate manifests, Parquet rows, videos, timestamps, and feature consistency.",

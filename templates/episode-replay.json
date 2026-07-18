@@ -1,0 +1,67 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "Replay Recorded Episode",
+  "saved_at": "2026-07-17T00:00:00",
+  "entrypoint": {
+    "node_id": "output",
+    "port": "value"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Open a saved Blacknode episode camera video with playback controls and expose its exact video, Parquet, and episode paths.",
+    "color": "#8b5cf6",
+    "required_packages": [
+      "blacknode-dataset"
+    ]
+  },
+  "node_meta": {
+    "dataset": {
+      "id": "dataset",
+      "type": "DatasetCreate",
+      "params": {
+        "dataset_id": "teleoperation-demo",
+        "root": "",
+        "task": "Teleoperate the robot to complete the demonstration",
+        "fps": 30,
+        "robot_type": "so_arm101",
+        "metadata": {}
+      },
+      "pos": [80, 180],
+      "inputs": ["trigger", "dataset_id", "root", "task", "fps", "robot_type", "metadata"],
+      "outputs": ["dataset", "path", "summary", "report"],
+      "input_types": {"trigger": "Any", "dataset_id": "Text", "root": "Text", "task": "Text", "fps": "Int", "robot_type": "Text", "metadata": "Dict"},
+      "output_types": {"dataset": "Dict", "path": "Text", "summary": "Dict", "report": "Text"},
+      "input_defaults": {"dataset_id": "teleoperation-demo", "root": "", "task": "Teleoperate the robot", "fps": 30, "robot_type": "", "metadata": {}}
+    },
+    "replay": {
+      "id": "replay",
+      "type": "EpisodeReplay",
+      "params": {
+        "episode_index": 0,
+        "camera": "camera_0"
+      },
+      "pos": [500, 180],
+      "inputs": ["trigger", "dataset", "episode_index", "camera"],
+      "outputs": ["video", "replay", "episode_path", "video_path", "data_path", "report"],
+      "input_types": {"trigger": "Any", "dataset": "Dict", "episode_index": "Int", "camera": "Text"},
+      "output_types": {"video": "Video", "replay": "Dict", "episode_path": "Text", "video_path": "Text", "data_path": "Text", "report": "Text"},
+      "input_defaults": {"dataset": {}, "episode_index": 0, "camera": ""}
+    },
+    "output": {
+      "id": "output",
+      "type": "Output",
+      "params": {"label": "Episode Replay"},
+      "pos": [900, 120],
+      "inputs": ["value"],
+      "outputs": [],
+      "input_types": {"value": "Any"},
+      "output_types": {},
+      "input_defaults": {}
+    }
+  },
+  "edges": [
+    {"from": "dataset", "from_port": "dataset", "to": "replay", "to_port": "dataset"},
+    {"from": "replay", "from_port": "video", "to": "output", "to_port": "value"}
+  ]
+}

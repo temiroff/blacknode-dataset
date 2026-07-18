@@ -1,0 +1,39 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "Browse and Replay Datasets",
+  "saved_at": "2026-07-17T00:00:00",
+  "entrypoint": {
+    "node_id": "browser",
+    "port": "catalog"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Choose a dataset root, select a dataset, episode, and camera, replay or trim it, and inspect synchronized leader, observation, action, timing, and artifact data.",
+    "color": "#8b5cf6",
+    "required_packages": [
+      "blacknode-dataset"
+    ]
+  },
+  "node_meta": {
+    "browser": {
+      "id": "browser",
+      "type": "DatasetBrowser",
+      "params": {
+        "root": "",
+        "dataset": {},
+        "dataset_id": "",
+        "episode_index": 0,
+        "camera": "",
+        "refresh_key": 0
+      },
+      "pos": [100, 100],
+      "inputs": ["trigger", "dataset", "root", "dataset_id", "episode_index", "camera", "refresh_key"],
+      "outputs": ["dataset", "catalog", "episode", "video", "replay_token", "episode_path", "video_path", "data_path", "report"],
+      "input_types": {"trigger": "Any", "dataset": "Dict", "root": "Text", "dataset_id": "Text", "episode_index": "Int", "camera": "Text", "refresh_key": "Int"},
+      "output_types": {"dataset": "Dict", "catalog": "Dict", "episode": "Dict", "video": "Video", "replay_token": "Text", "episode_path": "Text", "video_path": "Text", "data_path": "Text", "report": "Text"},
+      "input_defaults": {"dataset": {}, "root": "", "dataset_id": "", "episode_index": 0, "camera": "", "refresh_key": 0}
+    }
+  },
+  "edges": []
+}

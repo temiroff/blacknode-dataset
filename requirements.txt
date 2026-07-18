@@ -4,3 +4,4 @@ opencv-python>=4.8
 numpy>=1.24
 huggingface-hub>=0.24
 h5py>=3.11
+imageio-ffmpeg>=0.5

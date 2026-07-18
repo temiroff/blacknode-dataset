@@ -25,13 +25,24 @@ provides a calibrated SO-ARM101 leader/follower flow, a local camera preview,
 dynamic multi-camera collection, a dataset, and an inline recorder dashboard.
 Motion starts disarmed and recording starts in `status` mode.
 
+`DatasetCreate` stores data under `~/.blacknode/datasets/<dataset-id>` by
+default. The editor shows that resolved location and provides **Choose folder**
+to select a visible storage root such as `E:\RobotData`; the dataset ID remains
+its own subfolder. **Use default** restores the application-data location. The
+leading dot follows the conventional application-data directory name and does
+not affect dataset contents or portability.
+
 ## Nodes
 
 | Node | Purpose |
 | --- | --- |
 | `DatasetCreate` | Create or reopen a dataset with a stable task, FPS, robot type, and metadata. |
+| `DatasetBrowser` | Pick a storage root, dataset, episode, and camera, replay or trim it, and inspect synchronized robot and timing data. |
+| `ReplayTrajectorySmoother` | Smooth a recorded episode's joint trajectories offline (zero-lag B-spline / Gaussian / Savitzky-Golay / One-Euro) and emit a new `replay_token`. Read-only. |
+| `ReplayStreamPublisher` | Broadcast the selected replay episode frame-by-frame over a plain WebSocket so ROS 2, Maya, Isaac Lab, or any other app can subscribe. Read-only; never commands hardware. |
 | `DatasetCameraStreamList` | Collect any number of camera stream handles through dynamic sockets. |
-| `EpisodeRecorder` | Start, pause, resume, save/finalize, stop, or discard a recording and render its live dashboard. |
+| `EpisodeRecorder` | Start, pause, resume, save/finalize, stop, or discard a recording and render its live camera and capture-health dashboard. |
+| `EpisodeReplay` | Play any saved episode camera video and expose its task, timing, joints, camera, and exact artifact paths. |
 | `EpisodeDatasetSummary` | Inspect saved episodes, frame totals, duration, cameras, joints, and recoverable journals. |
 | `EpisodeDatasetValidate` | Validate manifests, Parquet rows, videos, timestamps, and feature consistency. |
 | `HDF5EpisodeExport` | Check or export one Blacknode HDF5 file per saved episode. |
@@ -54,11 +65,122 @@ Motion starts disarmed and recording starts in `status` mode.
 7. Run `EpisodeDatasetValidate`, then select the export profile required by the
    training workflow.
 
+While recording, the dashboard shows the first camera stream, captured frame
+count, dataset time, effective capture rate, robot/camera source age, and dropped
+frames. A freshness failure names the exact source and reports its measured age
+and configured limit.
+
+Recorder buttons control the managed recorder directly after the graph has
+resolved its inputs once. Pause, resume, save, stop, and discard do not recook
+the robot/camera network. Save stops capture before encoding the episode, so the
+frame count is final as soon as saving begins. The recorder displays its active
+journal path and the final saved episode directory.
+
+Connect `EpisodeReplay.video` to an `Output` node to play a saved camera video
+with browser seek and playback controls. Select `episode_index` and optionally a
+camera name. Replay is read-only and never publishes robot commands. Its
+`episode_path`, `video_path`, and `replay` outputs identify the exact saved
+artifacts and recorded metadata.
+
+For interactive review, open `templates/dataset-browser.json`. Its
+`DatasetBrowser` panel lists every valid dataset beneath the chosen root and
+provides dataset, episode, and camera selectors. Playing or seeking the video
+updates the current frame index, dataset timestamp, sample sequence, camera
+sequence, and the complete ordered leader/observation/action joint table. The
+panel also shows the task, save time, episode directory, MP4 path, and Parquet
+robot-data path. Dataset browsing and replay are read-only and never command a
+robot. The replay toolbar provides Replay/Pause, restart, previous/next frame,
+0.25×–2× playback speed, looping controls, and radians/degrees display switching.
+Stored values remain unchanged; the unit switch only converts the review table.
+Pause or seek to a frame, then use **Cut before** or **Cut after** to remove the
+unwanted beginning or ending. The selected frame is retained. Blacknode shows
+the exact number of frames to remove and requires confirmation before changing
+the dataset. The edit atomically trims every camera video and the matching
+Parquet rows, resets the remaining frame indexes and dataset timestamps, and
+updates episode metadata. Trimming is disabled while that dataset has an active
+recorder, and it never sends robot commands.
+
+New episode videos are encoded as browser-compatible H.264 (`avc1`) with a
+fast-start MP4 index. When browsing an older `mp4v` episode, Blacknode creates
+an H.264 playback copy in the operating system's temporary cache and preserves
+the original dataset artifact unchanged.
+
+Connect `DatasetCreate.dataset` to `DatasetBrowser.dataset` to open the same
+dataset automatically. With no connection and an empty `root`, both nodes use
+the same `~/.blacknode/datasets` default. An explicit browser root or dataset ID
+still allows reviewing another collection.
+
 `stop` preserves the current journal under `incomplete/<run-id>`. The same run
 can later be saved/finalized or discarded. After three consecutive source
 errors, the recorder pauses and reports the last error. The saved timeline uses
 `frame_index / fps`; source capture and wall-clock timestamps remain attached
 to the robot and camera samples.
+
+## Stream a replay to external apps
+
+`ReplayStreamPublisher` fans a saved episode out to any number of apps over a
+plain WebSocket, so the same recorded demonstration can drive ROS 2, Maya, Isaac
+Lab, or anything else at once. It is transport-neutral and **read-only**: it
+re-reads recorded frames through the same replay path the browser uses and never
+opens a robot connection or commands motion. What a subscriber does with the
+values is the subscriber's responsibility.
+
+1. Load `templates/replay-stream.json`, or wire `DatasetBrowser.replay_token`
+   into a `ReplayStreamPublisher`.
+2. Select a dataset and episode in the browser.
+3. Set the publisher's `action` to `start` and cook it. `stream_url` is
+   `ws://127.0.0.1:8765` by default. `source` chooses which recorded signal to
+   send (`action`, `observation`, or `leader`); `rate` scales playback speed and
+   `loop` repeats the episode.
+4. Start a subscriber. Each broadcast is one JSON frame carrying `joint_names`,
+   an ordered `positions` array, `units`, timestamps, and the full per-joint
+   dictionaries.
+
+`action=stop`, **Stop all**, or restarting the server ends the stream and closes
+the port.
+
+### Smooth shaky trajectories before streaming
+
+Insert a `ReplayTrajectorySmoother` between the browser and the publisher
+(`DatasetBrowser.replay_token → ReplayTrajectorySmoother.replay_token →
+ReplayStreamPublisher.replay_token`) to calm jittery recordings before they drive
+an app. Because replay has the whole episode available, the filters are
+**non-causal and zero-lag** — the smoothed motion has no added latency:
+
+| `method` | Filter | Needs |
+| --- | --- | --- |
+| `spline` (default) | Cubic smoothing B-spline (control points + knots) | SciPy |
+| `savgol` | Savitzky-Golay, peak-preserving | SciPy |
+| `gaussian` | Zero-phase Gaussian | numpy only |
+| `moving_average` | Zero-phase box | numpy only |
+| `one_euro` | Causal One-Euro (for the low-latency / live case) | numpy only |
+| `none` | Pass through unchanged | — |
+
+`strength` is the single tuning knob (larger = smoother). The node reports the
+measured jerk reduction and renders a raw-vs-smoothed sparkline of one joint on
+its `preview` output, so a shaky recording and its smoothed version are visible
+side by side on the canvas. When SciPy is absent, `spline`/`savgol` fall back to
+`gaussian` and say so.
+
+The B-spline representation is inspired by
+[B-spline Policy (arXiv:2607.09648)](https://arxiv.org/abs/2607.09648), which
+predicts continuous B-spline actions in-policy for faster execution; here the
+same curve is fit offline to recorded trajectories purely to smooth them for
+replay and streaming.
+
+Example subscribers ship in [`clients/`](clients/README.md), one small file per
+app, all built on a dependency-free WebSocket client that runs unchanged inside
+mayapy, an Isaac Lab environment, or a ROS 2 node:
+
+| Client | Runs in | Maps the stream to |
+| --- | --- | --- |
+| `clients/ros2_bridge.py` | a sourced ROS 2 / WSL Python | `sensor_msgs/JointState` on a topic |
+| `clients/maya_client.py` | Maya / `mayapy` | rig attributes via a joint→attribute map |
+| `clients/isaac_lab_client.py` | Isaac Lab Python | articulation joint position targets |
+
+Adding another target is one more subscriber file — no Blacknode change is
+needed. See [`clients/README.md`](clients/README.md) for the wire schema and a
+40-line template for a new app.
 
 ## Native dataset layout
 
