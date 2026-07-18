@@ -128,7 +128,11 @@ non-finite or isolated extreme joint values for visualization only, and evaluate
 every episode frame exactly once. If adjacent world-space samples are unusually
 far apart, Maya cuts the path there instead of drawing a misleading connector.
 Each continuous section becomes its own curve; if Maya rejects a cubic section,
-that section falls back to a linear curve and the status reports it. The original dataset remains unchanged. The
+that section falls back to a linear curve and the status reports it. Maya forces
+each mapped node's dependency graph and world matrix to evaluate before sampling;
+viewport refresh is never suspended, so an unsolved origin pose cannot be inserted
+by deferred rig evaluation. Curves are created explicitly in world space. The
+original dataset remains unchanged. The
 generated curves are parented under
 `blacknodeDatasetDebugPaths`; **Clear debug paths** deletes them. Editing a joint
 mapping evaluates the cached full trajectory again for the new rig target.
@@ -142,6 +146,9 @@ does not slow pose application. The complete trajectory is evaluated only when a
 trajectory/mapping changes; individual streamed frames never rebuild the path.
 Executing `maya_stream.py` again closes the previous receiver automatically, so
 reloading the client does not leave duplicate WebSocket threads in Maya.
+**Stop** sends a WebSocket close frame and closes the socket. StreamPublisher
+removes the subscriber immediately, and the graph's `clients`, status, report,
+and dashboard outputs reflect the disconnect on the next editor status poll.
 
 ### Running inside Isaac Sim
 

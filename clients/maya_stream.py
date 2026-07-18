@@ -300,10 +300,10 @@ def _rebuild_debug_path(name):
         curve_name = _curve_name(name, segment_index)
         degree = min(3, len(segment) - 1)
         try:
-            curve = cmds.curve(name=curve_name, degree=degree, editPoint=segment)
+            curve = cmds.curve(name=curve_name, degree=degree, editPoint=segment, worldSpace=True)
         except Exception as cubic_error:  # noqa: BLE001 - Maya can reject degenerate cubic input
             try:
-                curve = cmds.curve(name=curve_name, degree=1, point=segment)
+                curve = cmds.curve(name=curve_name, degree=1, point=segment, worldSpace=True)
                 fallbacks += 1
             except Exception as linear_error:  # noqa: BLE001
                 for partial_curve in created:
@@ -520,14 +520,7 @@ def _build_full_trajectory_paths(message):
     result = empty
     selection = cmds.ls(selection=True, long=True) or []
     undo_enabled = bool(cmds.undoInfo(query=True, state=True))
-    refresh_was_suspended = False
     try:
-        try:
-            refresh_was_suspended = bool(cmds.refresh(query=True, suspend=True))
-        except Exception:  # noqa: BLE001 - older Maya versions may not query this flag
-            refresh_was_suspended = False
-        if not refresh_was_suspended:
-            cmds.refresh(suspend=True)
         cmds.undoInfo(stateWithoutFlush=False)
         clear_debug_paths()
         for target in JOINT_MAP.values():
@@ -545,6 +538,8 @@ def _build_full_trajectory_paths(message):
                 if not node or not cmds.objExists(node):
                     continue
                 try:
+                    # Pull the complete dependency chain before reading a world-space sample.
+                    cmds.dgeval(f"{node}.worldMatrix[0]")
                     position = cmds.xform(node, query=True, worldSpace=True, translation=True)
                     _path_points.setdefault(name, {})[frame_index] = tuple(
                         float(value) for value in position[:3])
@@ -562,12 +557,10 @@ def _build_full_trajectory_paths(message):
         cmds.select(selection, replace=True) if selection else cmds.select(clear=True)
         if undo_enabled:
             cmds.undoInfo(stateWithoutFlush=True)
-        if not refresh_was_suspended:
-            try:
-                cmds.refresh(suspend=False)
-                cmds.refresh(force=True)
-            except Exception:  # noqa: BLE001 - path data is still valid if repaint fails
-                pass
+        try:
+            cmds.refresh(force=True)
+        except Exception:  # noqa: BLE001 - path data is still valid if repaint fails
+            pass
         _state["building_paths"] = False
     return result
 
@@ -693,7 +686,18 @@ def stop_blacknode_stream():
         _state["latest_frame"] = None
         _state["pending_schema"] = None
     try:
-        _state["sock"].close()
+        sock = _state["sock"]
+        if sock is not None:
+            try:
+                # Client WebSocket frames must be masked; an empty close frame is mask-only.
+                sock.sendall(b"\x88\x80" + os.urandom(4))
+            except OSError:
+                pass
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            sock.close()
     except Exception:  # noqa: BLE001
         pass
     _set_status("stopped")

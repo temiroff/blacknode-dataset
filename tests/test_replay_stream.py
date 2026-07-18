@@ -99,6 +99,11 @@ def test_publisher_streams_replay_to_a_subscriber(stubbed):
     finally:
         stream.close()
 
+    deadline = time.monotonic() + 2.0
+    while rt.control_stream("t1", "status")["clients"] != 0 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert rt.control_stream("t1", "status")["clients"] == 0
+
     stopped = rt.control_stream("t1", "stop")
     assert stopped["streaming"] is False
 
@@ -202,9 +207,11 @@ def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     assert "offCommand=lambda" in source
     assert "changeCommand=lambda enabled" not in source
     assert "cmds.xform(node, query=True, worldSpace=True, translation=True)" in source
+    assert 'cmds.dgeval(f"{node}.worldMatrix[0]")' in source
+    assert "cmds.refresh(suspend=True)" not in source
     assert "cmds.curve" in source
-    assert "editPoint=segment" in source
-    assert "degree=1, point=segment" in source
+    assert "editPoint=segment, worldSpace=True" in source
+    assert "degree=1, point=segment, worldSpace=True" in source
     assert '("overrideColorRGB", color)' in source
     assert "_PATH_COLORS" in source
     assert '("lineWidth", (4.0,))' in source
@@ -221,6 +228,7 @@ def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     assert "_drain_pending" in source
     assert '"latest_frame"' in source
     assert "def _run(url, state):" in source
+    assert 'sock.sendall(b"\\x88\\x80" + os.urandom(4))' in source
     assert "stale dropped" in source
     assert "cmds.scriptJob(idleEvent=_drain_pending" in source
     assert "_set_stream_status" in source
