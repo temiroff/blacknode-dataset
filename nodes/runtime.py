@@ -271,6 +271,8 @@ _replay_media: dict[str, Path] = {}
 _replay_sessions: dict[str, dict[str, Any]] = {}
 _replay_tables: dict[str, Any] = {}
 _publishers: dict[str, "StreamPublisher"] = {}
+_smoother_configs: dict[str, dict[str, Any]] = {}
+_smoother_locks: dict[str, threading.Lock] = {}
 _lock = threading.RLock()
 
 
@@ -614,6 +616,101 @@ def register_smoothed_replay(source_token: str, method: str, strength: float,
     }
 
 
+def configure_smoother(node_id: str, stream: Any) -> str:
+    """Retain a resolved replay input so parameter edits never recook upstream nodes."""
+    node_id = str(node_id or "").strip()
+    if not node_id:
+        raise ValueError("TrajectorySmoother is missing its node identity")
+    mode, source_token, _ = parse_stream(stream)
+    if mode != "replay":
+        raise ValueError("TrajectorySmoother needs a recorded replay stream")
+    with _lock:
+        if source_token not in _replay_sessions:
+            raise ValueError("replay selection expired; refresh the Dataset Browser")
+        previous = dict(_smoother_configs.get(node_id) or {})
+        _smoother_configs[node_id] = {
+            "source_token": source_token,
+            "output_token": previous.get("output_token", "") if previous.get("source_token") == source_token else "",
+        }
+        _smoother_locks.setdefault(node_id, threading.Lock())
+    return source_token
+
+
+def apply_configured_smoother(node_id: str, method: str, strength: float,
+                              preview_source: str = "action", preview_joint: str = "",
+                              stream: Any | None = None) -> dict[str, Any]:
+    """Recompute one smoother and hot-swap its running publishers, without a graph cook."""
+    node_id = str(node_id or "").strip()
+    if stream is not None:
+        configure_smoother(node_id, stream)
+    with _lock:
+        config = dict(_smoother_configs.get(node_id) or {})
+        smoother_lock = _smoother_locks.setdefault(node_id, threading.Lock())
+    if not config:
+        raise ValueError("smoother input is not configured; run the graph once, then adjust smoothing directly")
+
+    with smoother_lock:
+        with _lock:
+            config = dict(_smoother_configs.get(node_id) or {})
+        source_token = str(config.get("source_token") or "")
+        old_token = str(config.get("output_token") or "")
+        info = register_smoothed_replay(
+            source_token, method, strength,
+            preview_source=preview_source, preview_joint=preview_joint,
+        )
+        new_token = str(info.get("token") or "")
+        updated_publishers = 0
+        refresh_targets: list[tuple[Any, int]] = []
+        with _lock:
+            current = dict(_smoother_configs.get(node_id) or {})
+            current.update({
+                "source_token": source_token,
+                "output_token": new_token,
+                "method": str(method or "spline"),
+                "strength": float(strength),
+                "preview_source": str(preview_source or "action"),
+                "preview_joint": str(preview_joint or ""),
+            })
+            _smoother_configs[node_id] = current
+            if old_token and old_token != new_token:
+                for publisher in _publishers.values():
+                    if publisher.mode != "replay" or publisher.token != old_token:
+                        continue
+                    with publisher.lock:
+                        publisher.token = new_token
+                        publisher.frames = int(info.get("frames") or publisher.frames)
+                        publisher.joint_names = list(info.get("joint_names") or publisher.joint_names)
+                        publisher.fps = float(info.get("fps") or publisher.fps)
+                        publisher.units = str(info.get("units") or publisher.units)
+                        if publisher.sync_to_browser and publisher.sent > 0:
+                            refresh_targets.append((publisher, publisher.frame_index))
+                    updated_publishers += 1
+                token_still_used = any(
+                    item.get("output_token") == old_token
+                    for key, item in _smoother_configs.items() if key != node_id
+                ) or any(publisher.token == old_token for publisher in _publishers.values())
+                if not token_still_used:
+                    _replay_sessions.pop(old_token, None)
+                    _replay_tables.pop(old_token, None)
+                    _replay_media.pop(old_token, None)
+        refreshed_poses = 0
+        for publisher, frame_index in refresh_targets:
+            frame = replay_frame(new_token, frame_index)
+            if frame is None:
+                continue
+            publisher._broadcast(frame, frame_index, "smoother_update")
+            refreshed_poses += 1
+        info["publishers_updated"] = updated_publishers
+        info["poses_refreshed"] = refreshed_poses
+        outputs = smoother_outputs(info)
+        suffix = (f"; updated {updated_publishers} running publisher(s)" if updated_publishers
+                  else "; smoother output updated")
+        if refreshed_poses:
+            suffix += f"; refreshed the current pose on {refreshed_poses} publisher(s)"
+        outputs["report"] = str(outputs.get("report") or "") + suffix
+        return outputs
+
+
 def _sparkline(points: list[float], lo: float, span: float, x0: float, width: float,
                y0: float, height: float, color: str) -> str:
     if len(points) < 2:
@@ -744,6 +841,7 @@ class StreamPublisher:
     loop: bool
     source: str
     units: str
+    sync_to_browser: bool
     server: wsserver.WsBroadcastServer
     frames: int
     joint_names: list[str]
@@ -763,7 +861,7 @@ class StreamPublisher:
                                        name=f"blacknode-stream-{self.run_id}")
         self.thread.start()
 
-    def _broadcast(self, frame: dict[str, Any], index: int) -> None:
+    def _broadcast(self, frame: dict[str, Any], index: int, playback_event: str = "autoplay") -> int:
         names = list(frame.get("joint_names") or [])
         joints = frame.get(self.source) or {}
         positions = [float(joints.get(name, 0.0)) for name in names]
@@ -776,12 +874,14 @@ class StreamPublisher:
             "positions": positions,
             "seq": self.sent,
             "run_id": self.run_id,
+            "playback_event": playback_event,
         }
-        self.server.broadcast(json.dumps(payload))
+        delivered = self.server.broadcast(json.dumps(payload))
         with self.lock:
             self.frame_index = index
             self.sent += 1
             self.last_error = ""
+        return delivered
 
     def _poll_sample(self) -> dict[str, Any]:
         sample = _get_json(self.url, 2.0)
@@ -803,6 +903,10 @@ class StreamPublisher:
 
     def _loop(self) -> None:
         try:
+            if self.mode == "replay" and self.sync_to_browser:
+                while not self.stop_event.wait(0.2):
+                    pass
+                return
             period = 1.0 / max(1e-3, self.fps * max(0.01, self.rate))
             deadline = time.monotonic()
             index = 0
@@ -861,6 +965,7 @@ class StreamPublisher:
                 "loop": self.loop,
                 "source": self.source,
                 "units": self.units,
+                "sync_to_browser": self.sync_to_browser,
                 "last_error": self.last_error,
             }
 
@@ -873,8 +978,9 @@ class StreamPublisher:
 
 def stream_dashboard(status: dict[str, Any]) -> str:
     running = bool(status.get("streaming") or status.get("running"))
+    browser_sync = running and bool(status.get("sync_to_browser")) and status.get("mode") == "replay"
     color = "#22c55e" if running else "#64748b"
-    label = "STREAMING" if running else "STOPPED"
+    label = "READY" if browser_sync else "STREAMING" if running else "STOPPED"
     url = html.escape(str(status.get("stream_url") or "ws://—"))
     source = html.escape(str(status.get("source") or "action"))
     units = html.escape(str(status.get("units") or "radians"))
@@ -884,7 +990,9 @@ def stream_dashboard(status: dict[str, Any]) -> str:
     sent = int(status.get("sent") or 0)
     fps = float(status.get("fps") or 0.0)
     rate = float(status.get("rate") or 1.0)
-    error = html.escape(str(status.get("last_error") or "read-only replay · never commands hardware"))
+    fallback = ("Play or scrub the Dataset Browser timeline to send poses"
+                if browser_sync else "read-only replay · never commands hardware")
+    error = html.escape(str(status.get("last_error") or fallback))
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360">'
         '<rect width="960" height="360" rx="16" fill="#0f172a"/>'
@@ -911,8 +1019,9 @@ def stream_outputs(status: dict[str, Any]) -> dict[str, Any]:
     running = bool(status.get("streaming") or status.get("running"))
     url = str(status.get("stream_url") or "")
     if running:
-        report = (f"streaming {status.get('source', 'action')} -> {url} · "
-                  f"{int(status.get('clients') or 0)} subscriber(s) · "
+        prefix = ("ready for Dataset Browser playback" if status.get("sync_to_browser")
+                  and status.get("mode") == "replay" else f"streaming {status.get('source', 'action')}")
+        report = (f"{prefix} -> {url} · {int(status.get('clients') or 0)} subscriber(s) · "
                   f"frame {int(status.get('frame_index') or 0)}/{max(0, int(status.get('frames') or 0) - 1)} · "
                   f"sent {int(status.get('sent') or 0)}")
     else:
@@ -928,7 +1037,8 @@ def stream_outputs(status: dict[str, Any]) -> dict[str, Any]:
 
 
 def start_stream(*, run_id: str, stream: Any, host: str, port: int, fps: float,
-                 rate: float, loop: bool, source: str, units: str) -> dict[str, Any]:
+                 rate: float, loop: bool, source: str, units: str,
+                 sync_to_browser: bool = True) -> dict[str, Any]:
     run_id = str(run_id or "stream").strip() or "stream"
     source = str(source or "action").strip().lower()
     if source not in {"action", "observation", "leader"}:
@@ -950,12 +1060,20 @@ def start_stream(*, run_id: str, stream: Any, host: str, port: int, fps: float,
         joint_names = list(session.get("joint_names") or [])
         resolved_fps = float(fps or 0) or float(session.get("fps") or 0) or 30.0
         resolved_units = str(units or session.get("units") or "radians")
-    server = wsserver.WsBroadcastServer(host, int(port))
+    schema = json.dumps({
+        "kind": "blacknode.stream-schema", "schema_version": 1,
+        "joint_names": joint_names, "source": source, "units": resolved_units,
+        "positions": [], "frames": frames, "fps": resolved_fps,
+    })
+    server = wsserver.WsBroadcastServer(
+        host, int(port), initial_text=schema if mode == "replay" and sync_to_browser else "",
+    )
     publisher = StreamPublisher(
         run_id=run_id, mode=mode, token=token, url=url,
         host=str(host or "127.0.0.1"), port=int(port),
         fps=resolved_fps, rate=max(0.01, float(rate or 1.0)), loop=bool(loop), source=source,
-        units=resolved_units, server=server, frames=frames, joint_names=joint_names,
+        units=resolved_units, sync_to_browser=bool(sync_to_browser), server=server,
+        frames=frames, joint_names=joint_names,
     )
     try:
         publisher.start()
@@ -965,6 +1083,42 @@ def start_stream(*, run_id: str, stream: Any, host: str, port: int, fps: float,
     with _lock:
         _publishers[run_id] = publisher
     return publisher.status()
+
+
+def publish_replay_event(token: str, frame_index: int, event: str) -> dict[str, Any]:
+    """Broadcast one browser-selected replay pose to matching synchronized publishers."""
+    token = str(token or "")
+    event = str(event or "").strip().lower()
+    if event not in {"play", "seek"}:
+        raise ValueError("replay event must be 'play' or 'seek'")
+    with _lock:
+        source_session = dict(_replay_sessions.get(token) or {})
+        publishers = list(_publishers.values())
+        sessions = {publisher.token: dict(_replay_sessions.get(publisher.token) or {})
+                    for publisher in publishers}
+    if not source_session:
+        raise ValueError("replay selection expired; refresh the Dataset Browser")
+    frames = int(source_session.get("frames") or 0)
+    if frames <= 0:
+        raise ValueError("selected replay has no frames")
+    index = min(max(0, int(frame_index)), frames - 1)
+    matched = 0
+    delivered = 0
+    for publisher in publishers:
+        if publisher.mode != "replay" or not publisher.sync_to_browser:
+            continue
+        session = sessions.get(publisher.token) or {}
+        if publisher.token != token and str(session.get("source_token") or "") != token:
+            continue
+        frame = replay_frame(publisher.token, index)
+        if frame is None:
+            continue
+        matched += 1
+        delivered += publisher._broadcast(frame, index, event)
+    return {
+        "ok": True, "token": token, "frame_index": index, "event": event,
+        "publishers": matched, "subscribers": delivered,
+    }
 
 
 def control_stream(run_id: str, action: str) -> dict[str, Any]:
@@ -1047,6 +1201,8 @@ def stop_runtime_services() -> dict[str, Any]:
         recorders = list(_recorders.values())
         _recorders.clear()
         _recorder_configs.clear()
+        _smoother_configs.clear()
+        _smoother_locks.clear()
         publishers = list(_publishers.values())
         _publishers.clear()
     for recorder in recorders:

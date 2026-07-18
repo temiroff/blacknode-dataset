@@ -75,6 +75,8 @@ def _run(url: str, mapping: dict) -> None:
             frame = _stream.recv_json()
             if frame is None:
                 break
+            if frame.get("kind") == "blacknode.stream-schema":
+                continue
             # Maya is not thread-safe; marshal each edit onto the main thread.
             maya.utils.executeInMainThreadWithResult(_apply, mapping, frame)
     finally:

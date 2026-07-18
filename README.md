@@ -39,7 +39,7 @@ not affect dataset contents or portability.
 | `DatasetCreate` | Create or reopen a dataset with a stable task, FPS, robot type, and metadata. |
 | `DatasetBrowser` | Pick a storage root, dataset, episode, and camera, replay or trim it, and inspect synchronized robot and timing data. |
 | `TrajectorySmoother` | Smooth a recorded episode's joint trajectories offline (zero-lag B-spline / Gaussian / Savitzky-Golay / One-Euro) and emit a new `stream` handle. Read-only. |
-| `StreamPublisher` | Broadcast a `stream` (recorded replay or a live sample-stream) frame-by-frame over a plain WebSocket so ROS 2, Maya, Isaac Sim, or any other app can subscribe. Read-only; never commands hardware. |
+| `StreamPublisher` | Publish Browser-synchronized replay poses or a live sample stream over a plain WebSocket for Maya, ROS 2, Isaac Sim, and other subscribers. Read-only; never commands hardware. |
 | `DatasetCameraStreamList` | Collect any number of camera stream handles through dynamic sockets. |
 | `EpisodeRecorder` | Start, pause, resume, save/finalize, stop, or discard a recording and render its live camera and capture-health dashboard. |
 | `EpisodeReplay` | Play any saved episode camera video and expose its task, timing, joints, camera, and exact artifact paths. |
@@ -129,16 +129,26 @@ a recorded replay (`DatasetBrowser`/`TrajectorySmoother`) or a live
 1. Load `templates/replay-stream.json`, or wire `DatasetBrowser.stream`
    into a `StreamPublisher`.
 2. Select a dataset and episode in the browser.
-3. Set the publisher's `action` to `start` and cook it. `stream_url` is
-   `ws://127.0.0.1:8765` by default. `source` chooses which recorded signal to
-   send (`action`, `observation`, or `leader`); `rate` scales playback speed and
-   `loop` repeats the episode.
-4. Start a subscriber. Each broadcast is one JSON frame carrying `joint_names`,
+3. Keep `sync_to_browser=true`, set the publisher's `action` to `start`, and cook
+   it. `stream_url` is `ws://127.0.0.1:8765` by default. `source` chooses which
+   recorded signal to send (`action`, `observation`, or `leader`). The server is
+   now ready, but it does not advance the replay on its own.
+4. Start a subscriber, then play or seek in Dataset Browser. Every displayed
+   playback frame and timeline scrub pose is published. Each broadcast carries `joint_names`,
    an ordered `positions` array, `units`, timestamps, and the full per-joint
    dictionaries.
 
+Set `sync_to_browser=false` for an explicit independent replay; in that mode,
+`rate` scales its playback speed and `loop` repeats the episode.
+
 `action=stop`, **Stop all**, or restarting the server ends the stream and closes
 the port.
+
+The self-contained `clients/maya_stream.py` window provides **Get joints /
+Connect**. It receives joint names without changing the rig, lets each dataset
+joint target a Maya attribute with X/Y/Z axis, +1/-1 direction, and scale, then
+stores that mapping in Maya preferences. Rig values change only when Browser
+playback or timeline seeking publishes a pose.
 
 ### Smooth shaky trajectories before streaming
 
@@ -162,6 +172,15 @@ measured jerk reduction and renders a raw-vs-smoothed sparkline of one joint on
 its `preview` output, so a shaky recording and its smoothed version are visible
 side by side on the canvas. When SciPy is absent, `spline`/`savgol` fall back to
 `gaussian` and say so.
+
+After the graph resolves the smoother input once, changing `method`, `strength`,
+`preview_source`, or `preview_joint` recomputes only the in-memory smoother.
+Dataset Browser and other upstream nodes do not cook again. The preview updates
+directly, and every running StreamPublisher connected to the previous smoother
+output is hot-swapped to the new token while retaining its URL and subscribers.
+If Browser playback or seeking has already sent a pose, the newly smoothed value
+for that same frame is published immediately so connected apps update in place;
+no additional timeline movement is required. The recorded dataset remains unchanged.
 
 The B-spline representation is inspired by
 [B-spline Policy (arXiv:2607.09648)](https://arxiv.org/abs/2607.09648), which

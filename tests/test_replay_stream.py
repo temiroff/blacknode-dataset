@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import socket
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -70,7 +71,8 @@ def test_publisher_node_is_registered():
 
 def test_publisher_streams_replay_to_a_subscriber(stubbed):
     status = rt.start_stream(run_id="t1", stream=_replay_handle(), host="127.0.0.1", port=0,
-                             fps=60, rate=1.0, loop=True, source="action", units="radians")
+                             fps=60, rate=1.0, loop=True, source="action", units="radians",
+                             sync_to_browser=False)
     assert status["streaming"] is True
     assert status["mode"] == "replay"
     url = status["stream_url"]
@@ -102,7 +104,8 @@ def test_unrecognized_stream_handle_reports_error(stubbed):
 
 def test_stop_runtime_services_stops_publishers(stubbed):
     rt.start_stream(run_id="t2", stream=_replay_handle(), host="127.0.0.1", port=0,
-                    fps=60, rate=2.0, loop=True, source="observation", units="radians")
+                    fps=60, rate=2.0, loop=True, source="observation", units="radians",
+                    sync_to_browser=False)
     assert rt.runtime_status()["active"] is True
     result = rt.stop_runtime_services()
     assert result["stopped"]["streams"] >= 1
@@ -147,3 +150,43 @@ def test_publisher_streams_a_live_sample_stream():
     finally:
         rt.control_stream("live", "stop")
         server.shutdown()
+
+
+def test_browser_synchronized_publisher_waits_then_emits_play_and_seek(stubbed):
+    status = rt.start_stream(run_id="browser", stream=_replay_handle(), host="127.0.0.1", port=0,
+                             fps=60, rate=1.0, loop=True, source="action", units="radians")
+    assert status["sync_to_browser"] is True
+    stream = blacknode_ws.connect(status["stream_url"], timeout=5.0)
+    try:
+        schema = stream.recv_json()
+        assert schema["kind"] == "blacknode.stream-schema"
+        assert schema["joint_names"] == ["a", "b"]
+        assert schema["positions"] == []
+
+        stream._sock.settimeout(0.15)
+        with pytest.raises(socket.timeout):
+            stream.recv_json()
+
+        stream._sock.settimeout(2.0)
+        emitted = rt.publish_replay_event("tok", 3, "seek")
+        assert emitted["publishers"] == 1
+        frame = stream.recv_json()
+        assert frame["frame_index"] == 3
+        assert frame["positions"] == [3.0, 6.0]
+        assert frame["playback_event"] == "seek"
+    finally:
+        stream.close()
+        rt.control_stream("browser", "stop")
+
+
+def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
+    source = (_CLIENTS / "maya_stream.py").read_text(encoding="utf-8")
+    assert "Get joints / Connect" in source
+    assert "blacknode.stream-schema" in source
+    assert "cmds.optionVar" in source
+    assert 'for value in ("X", "Y", "Z")' in source
+    assert 'label="-1"' in source
+    for client in ("maya_client.py", "ros2_bridge.py", "isaac_lab_client.py"):
+        assert 'frame.get("kind") == "blacknode.stream-schema"' in (
+            _CLIENTS / client
+        ).read_text(encoding="utf-8")
