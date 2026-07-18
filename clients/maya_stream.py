@@ -26,6 +26,7 @@ import socket
 import ssl
 import struct
 import threading
+import time
 from urllib.parse import urlparse
 
 import maya.cmds as cmds
@@ -36,6 +37,25 @@ _STATUS = "bnStreamStatus"
 _JOINTS_COL = "bnStreamJoints"
 _MAPPING_OPTION = "blacknodeDatasetJointMappingV1"
 _PATH_GROUP = "blacknodeDatasetDebugPaths"
+_PATH_MAX_SAMPLES = 600
+
+# Script Editor reload safety: stop the receiver created by a previous exec().
+_previous_state = globals().get("_state")
+if isinstance(_previous_state, dict):
+    _previous_state["running"] = False
+    try:
+        previous_socket = _previous_state.get("sock")
+        if previous_socket is not None:
+            try:
+                previous_socket.shutdown(socket.SHUT_RDWR)
+            except Exception:  # noqa: BLE001 - the peer may already be closed
+                pass
+            previous_socket.close()
+    except Exception:  # noqa: BLE001 - a stale socket must not block reloading the UI
+        pass
+    previous_thread = _previous_state.get("thread")
+    if previous_thread is not None and previous_thread is not threading.current_thread():
+        previous_thread.join(timeout=1.0)
 
 JOINT_MAP: dict[str, dict] = {}   # joint name -> {"attr": ..., "scale": ...}, built from the UI
 _rows: dict[str, tuple] = {}      # joint name -> (attr, axis, sign, magnitude, path checkbox)
@@ -44,7 +64,8 @@ _path_curves: dict[str, str] = {}
 _state = {"sock": None, "thread": None, "frames": 0, "err": "", "running": False,
           "joints": None, "trajectory": None, "building_paths": False,
           "latest_frame": None, "pending_schema": None, "dropped": 0,
-          "pump_job": None, "lock": threading.Lock()}
+          "pump_job": None, "status_at": 0.0, "lock": threading.Lock()}
+del _previous_state
 
 
 # ---------------- minimal inlined WebSocket text client (stdlib only) ----------------
@@ -171,6 +192,11 @@ def _on_path_changed(name, enabled):
     if not trajectory or not trajectory.get("trajectory"):
         _set_status(f"{name} path enabled - waiting for the complete episode trajectory")
         return
+    _set_status(f"building {name} path across the complete episode...")
+    try:
+        cmds.refresh(force=True)
+    except Exception:  # noqa: BLE001 - status repaint is optional
+        pass
     result = _build_full_trajectory_paths(trajectory)
     if name in result.get("built", []):
         _set_status(f"{name} full episode path ready")
@@ -214,7 +240,8 @@ def _build_rows(names):
                                          changeCommand=lambda *_: apply_mapping(rebuild_paths=True),
                                          annotation="scale magnitude")
         path_ctrl = cmds.checkBox(label="Path", value=bool(saved.get("debug_path", False)),
-                                  changeCommand=lambda enabled, joint=name: _on_path_changed(joint, enabled),
+                                  onCommand=lambda *_, joint=name: _on_path_changed(joint, True),
+                                  offCommand=lambda *_, joint=name: _on_path_changed(joint, False),
                                   annotation="Show this rig node's world-space episode path")
         cmds.setParent("..")
         _rows[name] = (attr_ctrl, axis_ctrl, sign_ctrl, magnitude_ctrl, path_ctrl)
@@ -340,8 +367,20 @@ def _apply_positions(names, positions, units):
             pass
 
 
+def _trajectory_sample_indices(frame_count, max_samples=_PATH_MAX_SAMPLES):
+    """Cover a complete episode with a bounded sample count and exact endpoints."""
+    frame_count = max(0, int(frame_count))
+    max_samples = max(2, int(max_samples))
+    if frame_count <= max_samples:
+        return list(range(frame_count))
+    return sorted({
+        int(round(sample * (frame_count - 1) / float(max_samples - 1)))
+        for sample in range(max_samples)
+    })
+
+
 def _build_full_trajectory_paths(message):
-    """Evaluate every streamed episode pose once and build complete Maya paths."""
+    """Evaluate a bounded set across the complete episode and build Maya paths."""
     trajectory = list(message.get("trajectory") or [])
     names = list(message.get("joint_names") or [])
     enabled = {name for name, target in JOINT_MAP.items() if target.get("debug_path")}
@@ -351,9 +390,17 @@ def _build_full_trajectory_paths(message):
     _state["building_paths"] = True
     _state["trajectory"] = message
     saved_values = {}
+    result = empty
     selection = cmds.ls(selection=True, long=True) or []
     undo_enabled = bool(cmds.undoInfo(query=True, state=True))
+    refresh_was_suspended = False
     try:
+        try:
+            refresh_was_suspended = bool(cmds.refresh(query=True, suspend=True))
+        except Exception:  # noqa: BLE001 - older Maya versions may not query this flag
+            refresh_was_suspended = False
+        if not refresh_was_suspended:
+            cmds.refresh(suspend=True)
         cmds.undoInfo(stateWithoutFlush=False)
         clear_debug_paths()
         for target in JOINT_MAP.values():
@@ -363,7 +410,8 @@ def _build_full_trajectory_paths(message):
                     saved_values[attr] = cmds.getAttr(attr)
                 except Exception:  # noqa: BLE001
                     pass
-        for frame_index, positions in enumerate(trajectory):
+        for frame_index in _trajectory_sample_indices(len(trajectory)):
+            positions = trajectory[frame_index]
             _apply_positions(names, positions, message.get("units"))
             for name in enabled:
                 target = JOINT_MAP.get(name) or {}
@@ -387,6 +435,12 @@ def _build_full_trajectory_paths(message):
         cmds.select(selection, replace=True) if selection else cmds.select(clear=True)
         if undo_enabled:
             cmds.undoInfo(stateWithoutFlush=True)
+        if not refresh_was_suspended:
+            try:
+                cmds.refresh(suspend=False)
+                cmds.refresh(force=True)
+            except Exception:  # noqa: BLE001 - path data is still valid if repaint fails
+                pass
         _state["building_paths"] = False
     return result
 
@@ -421,8 +475,8 @@ def _tick(frame):
         _set_status(f"{len(names)} joints loaded - {suffix}")
         return
     _apply(frame)
-    _set_status(f"streaming latest - {_state['frames']} received - {_state['dropped']} stale dropped - "
-                f"{len(JOINT_MAP)}/{len(names)} joints mapped")
+    _set_stream_status(f"streaming latest - {_state['frames']} received - {_state['dropped']} stale dropped - "
+                       f"{len(JOINT_MAP)}/{len(names)} joints mapped")
 
 
 def _drain_pending():
@@ -443,32 +497,44 @@ def _set_status(label):
         cmds.text(_STATUS, edit=True, label=label)
 
 
-def _run(url):
+def _set_stream_status(label):
+    """Avoid making Maya repaint the status widget for every network pose."""
+    now = time.monotonic()
+    if now - float(_state.get("status_at") or 0.0) < 0.25:
+        return
+    _state["status_at"] = now
+    _set_status(label)
+
+
+def _run(url, state):
+    """Receive into the state object owned by this script instance."""
     try:
         sock, rest = _ws_connect(url)
-        _state["sock"] = sock
-        _state["err"] = ""
+        state["sock"] = sock
+        state["err"] = ""
         for text in _ws_frames(sock, rest):
-            if not _state["running"]:
+            if not state["running"]:
                 break
             frame = json.loads(text)
-            with _state["lock"]:
+            with state["lock"]:
                 if frame.get("kind") in {"blacknode.stream-schema", "blacknode.stream-trajectory"}:
-                    _state["pending_schema"] = frame
+                    state["pending_schema"] = frame
                 else:
-                    _state["frames"] += 1
-                    if _state.get("latest_frame") is not None:
-                        _state["dropped"] += 1
-                    _state["latest_frame"] = frame
+                    state["frames"] += 1
+                    if state.get("latest_frame") is not None:
+                        state["dropped"] += 1
+                    state["latest_frame"] = frame
     except Exception as exc:  # noqa: BLE001 - surfaced in the window
-        _state["err"] = str(exc)
+        if state["running"]:
+            state["err"] = str(exc)
     finally:
-        _state["running"] = False
+        state["running"] = False
         try:
-            _state["sock"].close()
+            state["sock"].close()
         except Exception:  # noqa: BLE001
             pass
-        maya.utils.executeDeferred(_set_status, f"error: {_state['err']}" if _state["err"] else "stopped")
+        if state is _state:
+            maya.utils.executeDeferred(_set_status, f"error: {state['err']}" if state["err"] else "stopped")
 
 
 def start_blacknode_stream(url="ws://127.0.0.1:8765"):
@@ -477,8 +543,9 @@ def start_blacknode_stream(url="ws://127.0.0.1:8765"):
         return
     clear_debug_paths()
     _state.update(frames=0, err="", running=True, joints=None, trajectory=None, building_paths=False,
-                  latest_frame=None, pending_schema=None, dropped=0)
-    _state["thread"] = threading.Thread(target=_run, args=(url,), daemon=True, name="blacknode-stream")
+                  latest_frame=None, pending_schema=None, dropped=0, status_at=0.0)
+    _state["thread"] = threading.Thread(target=_run, args=(url, _state), daemon=True,
+                                         name="blacknode-stream")
     _state["thread"].start()
     _set_status(f"connecting to {url}")
 
