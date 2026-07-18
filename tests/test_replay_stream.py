@@ -210,13 +210,14 @@ def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     assert 'cmds.dgeval(f"{node}.worldMatrix[0]")' in source
     assert "cmds.refresh(suspend=True)" not in source
     assert "cmds.curve" in source
-    assert "editPoint=segment, worldSpace=True" in source
-    assert "degree=1, point=segment, worldSpace=True" in source
+    assert "degree=3, editPoint=segment, worldSpace=True" in source
+    assert "degree=1, point=segment" not in source
     assert '("overrideColorRGB", color)' in source
     assert "_PATH_COLORS" in source
     assert '("lineWidth", (4.0,))' in source
     assert "_reject_discontinuity_outliers" in source
     assert "_split_path_segments" in source
+    assert "_keep_path_segments" in source
     assert "_build_full_trajectory_paths" in source
     assert "_sanitize_path_trajectory" in source
     assert "for frame_index, positions in enumerate(trajectory)" in source
@@ -270,6 +271,23 @@ def test_maya_path_segments_cut_large_world_space_gaps():
     assert segments == [points[:3], points[3:]]
     assert cuts == 1
     assert threshold < 98.0
+
+
+def test_maya_path_discards_short_fragments_around_gaps():
+    source = (_CLIENTS / "maya_stream.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = [node for node in tree.body
+                 if isinstance(node, ast.FunctionDef) and node.name == "_keep_path_segments"]
+    namespace = {"math": math}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "maya_path_fragments", "exec"), namespace)
+
+    origin_fragment = [(float(index), 0.0, 0.0) for index in range(5)]
+    valid_path = [(float(index), 1.0, 0.0) for index in range(100)]
+    kept, discarded, minimum = namespace["_keep_path_segments"](
+        [origin_fragment, valid_path], len(origin_fragment) + len(valid_path))
+    assert kept == [valid_path]
+    assert discarded == 1
+    assert minimum >= 8
 
 
 def test_maya_path_sanitizer_repairs_bad_values_without_dropping_frames():

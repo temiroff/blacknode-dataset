@@ -127,8 +127,9 @@ the spline. Maya waits until the complete trajectory payload is present, repairs
 non-finite or isolated extreme joint values for visualization only, and evaluates
 every episode frame exactly once. If adjacent world-space samples are unusually
 far apart, Maya cuts the path there instead of drawing a misleading connector.
-Each continuous section becomes its own curve; if Maya rejects a cubic section,
-that section falls back to a linear curve and the status reports it. Maya forces
+Each sufficiently long continuous section becomes its own cubic curve. Short
+fragments around a gap are discarded, so an invalid origin sample cannot create
+a stray linear path. Maya never substitutes a linear curve. Maya forces
 each mapped node's dependency graph and world matrix to evaluate before sampling;
 viewport refresh is never suspended, so an unsolved origin pose cannot be inserted
 by deferred rig evaluation. Curves are created explicitly in world space. The

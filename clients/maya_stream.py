@@ -213,8 +213,13 @@ def _on_path_changed(name, enabled):
         repaired = int(result.get("repaired") or 0)
         cuts = int(result.get("cuts") or 0)
         segments = int(result.get("segments") or 0)
+        discarded = int(result.get("discarded_fragments") or 0)
         _set_status(f"{name} path ready: {segments} segment(s), {cuts} gap cut(s), "
+                    f"{discarded} short fragment(s) discarded, "
                     f"{repaired} unusual value(s) repaired")
+    elif name in result.get("discarded", []):
+        discarded = int(result.get("discarded_fragments") or 0)
+        _set_status(f"{name} path not drawn: {discarded} short fragment(s) around gap(s) discarded")
     elif name in result.get("stationary", []):
         _set_status(f"{name} path has no world-space movement on mapped node {node}")
     else:
@@ -283,6 +288,7 @@ def _rebuild_debug_path(name):
     points = _reject_discontinuity_outliers(points)
     points = [point for index, point in enumerate(points) if index == 0 or point != points[index - 1]]
     segments, cuts, _ = _split_path_segments(points)
+    segments, discarded_fragments, minimum_points = _keep_path_segments(segments, len(points))
     old_curves = _path_curves.pop(name, []) or []
     if isinstance(old_curves, str):
         old_curves = [old_curves]
@@ -290,28 +296,23 @@ def _rebuild_debug_path(name):
         if cmds.objExists(curve):
             cmds.delete(curve)
     if not segments:
-        return {"built": False, "segments": 0, "cuts": cuts, "fallbacks": 0}
+        return {"built": False, "segments": 0, "cuts": cuts,
+                "discarded_fragments": discarded_fragments, "minimum_points": minimum_points}
     if not cmds.objExists(_PATH_GROUP):
         cmds.group(empty=True, name=_PATH_GROUP)
     color = tuple((JOINT_MAP.get(name) or {}).get("path_color") or _PATH_COLORS[0])
     created = []
-    fallbacks = 0
     for segment_index, segment in enumerate(segments):
         curve_name = _curve_name(name, segment_index)
-        degree = min(3, len(segment) - 1)
         try:
-            curve = cmds.curve(name=curve_name, degree=degree, editPoint=segment, worldSpace=True)
-        except Exception as cubic_error:  # noqa: BLE001 - Maya can reject degenerate cubic input
-            try:
-                curve = cmds.curve(name=curve_name, degree=1, point=segment, worldSpace=True)
-                fallbacks += 1
-            except Exception as linear_error:  # noqa: BLE001
-                for partial_curve in created:
-                    if cmds.objExists(partial_curve):
-                        cmds.delete(partial_curve)
-                raise RuntimeError(
-                    f"segment {segment_index + 1} curve failed; cubic: {cubic_error}; linear: {linear_error}"
-                ) from linear_error
+            curve = cmds.curve(name=curve_name, degree=3, editPoint=segment, worldSpace=True)
+        except Exception as cubic_error:  # noqa: BLE001 - surface the Maya command failure
+            for partial_curve in created:
+                if cmds.objExists(partial_curve):
+                    cmds.delete(partial_curve)
+            raise RuntimeError(
+                f"cubic segment {segment_index + 1} failed with {len(segment)} points: {cubic_error}"
+            ) from cubic_error
         cmds.parent(curve, _PATH_GROUP)
         created.append(curve)
         shape = (cmds.listRelatives(curve, shapes=True, fullPath=True) or [None])[0]
@@ -330,7 +331,8 @@ def _rebuild_debug_path(name):
                         pass
     _path_curves[name] = created
     _set_path_visibility(name, bool((JOINT_MAP.get(name) or {}).get("debug_path")))
-    return {"built": True, "segments": len(created), "cuts": cuts, "fallbacks": fallbacks}
+    return {"built": True, "segments": len(created), "cuts": cuts,
+            "discarded_fragments": discarded_fragments, "minimum_points": minimum_points}
 
 
 def _refresh_debug_paths(force=False):
@@ -340,16 +342,18 @@ def _refresh_debug_paths(force=False):
     if not force:
         return
     selection = cmds.ls(selection=True, long=True) or []
-    result = {"built": [], "stationary": [], "errors": {}, "segments": 0, "cuts": 0, "fallbacks": 0}
+    result = {"built": [], "stationary": [], "discarded": [], "errors": {}, "segments": 0, "cuts": 0,
+              "discarded_fragments": 0}
     try:
         for name in enabled:
             try:
                 path = _rebuild_debug_path(name)
-                bucket = "built" if path["built"] else "stationary"
+                bucket = ("built" if path["built"] else
+                          "discarded" if path.get("discarded_fragments") else "stationary")
                 result[bucket].append(name)
                 result["segments"] += int(path.get("segments") or 0)
                 result["cuts"] += int(path.get("cuts") or 0)
-                result["fallbacks"] += int(path.get("fallbacks") or 0)
+                result["discarded_fragments"] += int(path.get("discarded_fragments") or 0)
             except Exception as exc:  # noqa: BLE001 - debug drawing must not interrupt rig replay
                 result["errors"][name] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -395,6 +399,15 @@ def _split_path_segments(points):
     if len(current) >= 2:
         segments.append(current)
     return segments, cuts, threshold
+
+
+def _keep_path_segments(segments, total_points):
+    """Discard short pieces around a gap instead of drawing misleading line artifacts."""
+    if total_points < 4:
+        return [], len(segments), 4
+    minimum_points = min(total_points, max(8, min(30, int(math.ceil(total_points * 0.02)))))
+    kept = [segment for segment in segments if len(segment) >= minimum_points]
+    return kept, len(segments) - len(kept), minimum_points
 
 
 def _reject_discontinuity_outliers(points):
@@ -505,8 +518,9 @@ def _build_full_trajectory_paths(message):
     trajectory = list(message.get("trajectory") or [])
     names = list(message.get("joint_names") or [])
     enabled = {name for name, target in JOINT_MAP.items() if target.get("debug_path")}
-    empty = {"built": [], "stationary": [], "errors": {}, "missing": False, "repaired": 0,
-             "segments": 0, "cuts": 0, "fallbacks": 0}
+    empty = {"built": [], "stationary": [], "discarded": [], "errors": {},
+             "missing": False, "repaired": 0,
+             "segments": 0, "cuts": 0, "discarded_fragments": 0}
     expected_frames = int(message.get("frames") or len(trajectory))
     if expected_frames != len(trajectory):
         return {**empty, "missing": True}
@@ -592,13 +606,15 @@ def _tick(frame):
             else:
                 built = len(result.get("built", []))
                 stationary = len(result.get("stationary", []))
+                discarded_paths = len(result.get("discarded", []))
                 errors = len(result.get("errors", {}))
                 repaired = int(result.get("repaired") or 0)
                 segments = int(result.get("segments") or 0)
                 cuts = int(result.get("cuts") or 0)
-                fallbacks = int(result.get("fallbacks") or 0)
+                discarded = int(result.get("discarded_fragments") or 0)
                 suffix = (f"{built} joint path(s), {segments} segment(s), {cuts} gap cut(s), "
-                          f"{stationary} stationary, {errors} error(s), {fallbacks} linear fallback(s), "
+                          f"{discarded} short fragment(s) discarded, "
+                          f"{discarded_paths} path(s) rejected, {stationary} stationary, {errors} error(s), "
                           f"{repaired} unusual value(s) repaired")
         else:
             suffix = "enable a Path checkbox to build a full episode path"
