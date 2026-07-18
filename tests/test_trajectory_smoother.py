@@ -114,8 +114,14 @@ def test_smoothed_stream_streams_through_publisher(episode):
     assert status["streaming"] is True
     stream = blacknode_ws.connect(status["stream_url"], timeout=5.0)
     try:
+        schema = stream.recv_json()
+        assert schema["kind"] == "blacknode.stream-schema"
+        assert schema["frames"] == _FRAMES
+        assert len(schema["trajectory"]) == _FRAMES
+        assert schema["smoothing"]["method"] in {"spline", "gaussian"}
         frame = stream.recv_json()
         assert frame is not None
+        assert frame["kind"] == "blacknode.episode-frame"
         assert frame["joint_names"] == _JOINTS
         assert len(frame["positions"]) == 2
     finally:

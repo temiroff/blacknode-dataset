@@ -61,13 +61,14 @@ Each WebSocket message is one JSON object per frame:
 `positions` is `joint_names` resolved against the selected `source`, so most
 clients only need those two arrays plus `units`.
 
-In Browser-synchronized mode, a new subscriber first receives a
+For every recorded replay, including independent looping mode, a new subscriber first receives a
 `blacknode.stream-schema` message containing `joint_names`, `source`, and
 `units`, with an empty `positions` list. It also carries `trajectory`, the
 complete ordered position arrays for the selected source and episode. It is
 configuration data and must not be applied as a pose. Smoother changes publish
 an updated schema with a replacement full trajectory. The included clients
-handle it automatically.
+handle it automatically. Live sample streams remain frame-only because they do
+not have a finite episode trajectory.
 
 ## Included clients
 

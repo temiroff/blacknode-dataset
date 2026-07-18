@@ -690,8 +690,8 @@ def apply_configured_smoother(node_id: str, method: str, strength: float,
                         publisher.joint_names = list(info.get("joint_names") or publisher.joint_names)
                         publisher.fps = float(info.get("fps") or publisher.fps)
                         publisher.units = str(info.get("units") or publisher.units)
+                        trajectory_targets.append(publisher)
                         if publisher.sync_to_browser:
-                            trajectory_targets.append(publisher)
                             if publisher.sent > 0:
                                 refresh_targets.append((publisher, publisher.frame_index))
                     updated_publishers += 1
@@ -1124,7 +1124,7 @@ def start_stream(*, run_id: str, stream: Any, host: str, port: int, fps: float,
         units=resolved_units, sync_to_browser=bool(sync_to_browser), server=server,
         frames=frames, joint_names=joint_names,
     )
-    if mode == "replay" and sync_to_browser:
+    if mode == "replay":
         server.initial_text = json.dumps(publisher._trajectory_payload("blacknode.stream-schema"))
     try:
         publisher.start()

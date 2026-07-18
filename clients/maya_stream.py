@@ -188,7 +188,7 @@ def _on_path_changed(name, enabled):
         _set_status(f"Path error: {name} has no valid mapped Maya node")
         return
     trajectory = _state.get("trajectory")
-    if not trajectory or not trajectory.get("trajectory"):
+    if not trajectory:
         _set_status(f"{name} path enabled - waiting for the complete episode trajectory")
         return
     _set_status(f"building {name} path across the complete episode...")
@@ -197,8 +197,10 @@ def _on_path_changed(name, enabled):
     except Exception:  # noqa: BLE001 - status repaint is optional
         pass
     result = _build_full_trajectory_paths(trajectory)
-    if result.get("waiting"):
-        _set_status(f"{name} path enabled - waiting for the complete episode trajectory")
+    if result.get("missing"):
+        expected = int(trajectory.get("frames") or 0)
+        received = len(trajectory.get("trajectory") or [])
+        _set_status(f"Path error: publisher sent {received}/{expected} trajectory frames; reload and restart StreamPublisher")
     elif name in result.get("built", []):
         repaired = int(result.get("repaired") or 0)
         suffix = f"; ignored/repaired {repaired} unusual value(s)" if repaired else ""
@@ -438,10 +440,10 @@ def _build_full_trajectory_paths(message):
     trajectory = list(message.get("trajectory") or [])
     names = list(message.get("joint_names") or [])
     enabled = {name for name, target in JOINT_MAP.items() if target.get("debug_path")}
-    empty = {"built": [], "stationary": [], "errors": {}, "waiting": False, "repaired": 0}
+    empty = {"built": [], "stationary": [], "errors": {}, "missing": False, "repaired": 0}
     expected_frames = int(message.get("frames") or len(trajectory))
     if expected_frames != len(trajectory):
-        return {**empty, "waiting": True}
+        return {**empty, "missing": True}
     if not trajectory or not names or not enabled or _state.get("building_paths"):
         return empty
     trajectory, repaired = _sanitize_path_trajectory(trajectory, len(names))
@@ -483,7 +485,7 @@ def _build_full_trajectory_paths(message):
                 except Exception:  # noqa: BLE001 - one invalid rig node must not block other paths
                     continue
         result = _refresh_debug_paths(force=True)
-        result.update(waiting=False, repaired=repaired)
+        result.update(missing=False, repaired=repaired)
     finally:
         for attr, value in saved_values.items():
             try:
@@ -525,9 +527,9 @@ def _tick(frame):
         _state["trajectory"] = frame
         if any(target.get("debug_path") for target in JOINT_MAP.values()):
             result = _build_full_trajectory_paths(frame)
-            if result.get("waiting"):
-                suffix = (f"waiting for complete episode trajectory "
-                          f"({len(frame.get('trajectory') or [])}/{int(frame.get('frames') or 0)} frames)")
+            if result.get("missing"):
+                suffix = (f"PATH ERROR: publisher sent {len(frame.get('trajectory') or [])}/"
+                          f"{int(frame.get('frames') or 0)} trajectory frames; reload and restart StreamPublisher")
             else:
                 built = len(result.get("built", []))
                 stationary = len(result.get("stationary", []))
