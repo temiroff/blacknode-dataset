@@ -203,7 +203,9 @@ def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     assert '("lineWidth", (4.0,))' in source
     assert "_reject_discontinuity_outliers" in source
     assert "_build_full_trajectory_paths" in source
-    assert "_trajectory_sample_indices" in source
+    assert "_sanitize_path_trajectory" in source
+    assert "for frame_index, positions in enumerate(trajectory)" in source
+    assert 'expected_frames != len(trajectory)' in source
     assert "_on_path_changed" in source
     assert "full episode path ready" in source
     assert "path has no world-space movement" in source
@@ -238,21 +240,22 @@ def test_maya_path_filter_drops_isolated_spike_but_keeps_sustained_motion():
     assert reject(sustained) == [tuple(float(value) for value in point) for point in sustained]
 
 
-def test_maya_path_sampling_covers_full_range_with_exact_endpoints():
+def test_maya_path_sanitizer_repairs_bad_values_without_dropping_frames():
     source = (_CLIENTS / "maya_stream.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    function = next(node for node in tree.body
-                    if isinstance(node, ast.FunctionDef) and node.name == "_trajectory_sample_indices")
-    function.args.defaults = [ast.Constant(value=600)]
-    namespace = {}
-    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
-    exec(compile(module, "maya_path_sampling", "exec"), namespace)
+    wanted = {"_median", "_sanitize_path_trajectory"}
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    namespace = {"math": math}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "maya_path_sanitizer", "exec"), namespace)
 
-    indices = namespace["_trajectory_sample_indices"](10_000)
-    assert indices[0] == 0
-    assert indices[-1] == 9_999
-    assert len(indices) <= 600
-    assert indices == sorted(set(indices))
+    trajectory = [[0.0, 10.0], [1.0, 11.0], [1000.0, float("nan")],
+                  [2.0, 13.0], [3.0, 14.0]]
+    sanitized, repaired = namespace["_sanitize_path_trajectory"](trajectory, 2)
+    assert len(sanitized) == len(trajectory)
+    assert sanitized[0] == trajectory[0]
+    assert sanitized[-1] == trajectory[-1]
+    assert sanitized[2] == [1.5, 12.0]
+    assert repaired == 2
 
 
 def test_isaac_sim_script_editor_client_is_self_contained_and_safe_for_unmatched_dofs():
