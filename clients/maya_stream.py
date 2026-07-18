@@ -283,6 +283,21 @@ def _set_path_visibility(name, visible):
             cmds.setAttr(f"{curve}.visibility", bool(visible))
 
 
+def _bounds_include(sample_bounds, curve_bounds):
+    """Return whether generated geometry stays inside the Maya sample envelope."""
+    spans = [max(0.0, float(sample_bounds[index + 3]) - float(sample_bounds[index]))
+             for index in range(3)]
+    tolerance = max(max(spans) * 1e-4, 1e-5)
+    return all(float(curve_bounds[index]) >= float(sample_bounds[index]) - tolerance
+               and float(curve_bounds[index + 3]) <= float(sample_bounds[index + 3]) + tolerance
+               for index in range(3))
+
+
+def _sample_bounds(points):
+    return [min(float(point[axis]) for point in points) for axis in range(3)] + [
+        max(float(point[axis]) for point in points) for axis in range(3)]
+
+
 def _rebuild_debug_path(name):
     points = [_path_points[name][index] for index in sorted(_path_points.get(name, {}))]
     points = _reject_discontinuity_outliers(points)
@@ -305,7 +320,14 @@ def _rebuild_debug_path(name):
     for segment_index, segment in enumerate(segments):
         curve_name = _curve_name(name, segment_index)
         try:
-            curve = cmds.curve(name=curve_name, degree=3, editPoint=segment, worldSpace=True)
+            # Using the samples as cubic control points stays inside their envelope.
+            # Maya edit-point interpolation becomes numerically unstable for long,
+            # closely spaced trajectories and can invent distant/origin geometry.
+            curve = cmds.curve(name=curve_name, degree=3, point=segment, worldSpace=True)
+            curve_bounds = cmds.exactWorldBoundingBox(curve)
+            if not _bounds_include(_sample_bounds(segment), curve_bounds):
+                cmds.delete(curve)
+                raise RuntimeError("generated curve escaped the filtered sample bounds")
         except Exception as cubic_error:  # noqa: BLE001 - surface the Maya command failure
             for partial_curve in created:
                 if cmds.objExists(partial_curve):
