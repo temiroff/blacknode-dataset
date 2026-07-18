@@ -375,6 +375,14 @@ def save_episode(path: Path, run_id: str) -> dict[str, Any]:
         images = sorted(camera_dir.glob("frame-*.jpg"))
         if images:
             camera_info[camera_dir.name] = _encode_camera(images, temp / "cameras" / f"{camera_dir.name}.mp4", int(manifest["fps"]))
+            # Carry optional calibration metadata from the first captured frame
+            # into the persistent episode manifest.
+            if frames:
+                captured = (frames[0].get("cameras") or {}).get(camera_dir.name) or {}
+                for key in ("fov_horizontal", "fov_vertical", "fx", "fy", "cx", "cy",
+                            "distortion", "camera_model", "calibration"):
+                    if key in captured:
+                        camera_info[camera_dir.name][key] = captured[key]
     duration = len(frames) / float(manifest["fps"])
     episode_info = {
         "kind": "blacknode.episode",
@@ -544,12 +552,22 @@ def discard_episode(path: Path, run_id: str) -> bool:
 def summarize(path: Path) -> dict[str, Any]:
     manifest = load_manifest(path)
     episodes = list(manifest.get("episodes") or [])
+    camera_features = dict((manifest.get("features") or {}).get("cameras") or {})
+    camera_shapes = {
+        str(name): {
+            "width": int(info.get("width") or 0),
+            "height": int(info.get("height") or 0),
+            "channels": int(info.get("channels") or 3),
+        }
+        for name, info in camera_features.items() if isinstance(info, dict)
+    }
     return {
         **descriptor(path, manifest),
         "total_frames": sum(int(item.get("frames") or 0) for item in episodes),
         "duration_seconds": sum(float(item.get("duration_seconds") or 0.0) for item in episodes),
         "joint_names": list((manifest.get("features") or {}).get("joint_names") or []),
-        "cameras": sorted(((manifest.get("features") or {}).get("cameras") or {}).keys()),
+        "cameras": sorted(camera_features.keys()),
+        "camera_shapes": camera_shapes,
         "incomplete": sorted(item.name for item in (path / "incomplete").iterdir() if item.is_dir()),
         "episodes": episodes,
     }

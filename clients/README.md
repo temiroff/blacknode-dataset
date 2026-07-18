@@ -28,6 +28,7 @@ To smooth shaky recordings before they reach your app, drop a
 **TrajectorySmoother** between the browser and the publisher
 (`DatasetBrowser.stream → TrajectorySmoother.stream → StreamPublisher.stream`). It
 filters the whole episode offline with zero lag; subscribers need no changes.
+All smoothing methods retain the exact first and last joint samples.
 Smoothed frames additionally carry a `"smoothing": {"method": ..., "strength": ...}`
 field. After one initial graph run resolves its replay input, changing smoother
 parameters recomputes only that smoother and hot-swaps the running publisher;
@@ -62,8 +63,11 @@ clients only need those two arrays plus `units`.
 
 In Browser-synchronized mode, a new subscriber first receives a
 `blacknode.stream-schema` message containing `joint_names`, `source`, and
-`units`, with an empty `positions` list. It is configuration data and must not
-be applied as a pose. The included clients handle it automatically.
+`units`, with an empty `positions` list. It also carries `trajectory`, the
+complete ordered position arrays for the selected source and episode. It is
+configuration data and must not be applied as a pose. Smoother changes publish
+an updated schema with a replacement full trajectory. The included clients
+handle it automatically.
 
 ## Included clients
 
@@ -71,9 +75,10 @@ be applied as a pose. The included clients handle it automatically.
 | --- | --- | --- |
 | `ros2_bridge.py` | a sourced ROS 2 / WSL Python (`rclpy`) | `sensor_msgs/JointState` on a topic |
 | `maya_client.py` | Maya / `mayapy` | rig attributes via a `joint -> attr` JSON map |
+| `isaac_sim_stream.py` | Isaac Sim Script Editor | articulation DOF position targets |
 | `isaac_lab_client.py` | Isaac Lab Python | articulation joint position targets |
 
-All three import `blacknode_ws.py` (also in this folder), a dependency-free
+The importable clients use `blacknode_ws.py` (also in this folder), a dependency-free
 WebSocket client, so they run without `pip install` inside those environments.
 
 ### Running inside Maya
@@ -111,11 +116,121 @@ each joint, enter the Maya `node.attr`, select X/Y/Z and +1/-1 direction, and se
 an optional scale magnitude. Changes are saved automatically in Maya preferences
 and restored the next time the window loads. Blank rows are ignored.
 
-For Isaac Sim, the simplest path is often not a Python client at all: run
-`ros2_bridge.py` to put the stream on a ROS 2 topic and let Isaac Sim's ROS 2
-bridge (OmniGraph: *ROS2 Subscribe JointState → Articulation Controller*) consume
-it. Use `isaac_lab_client.py` when you want to drive an Isaac Lab articulation
-directly in Python.
+Enable **Path** on any joint row to visualize that mapped Maya node's world-space
+motion as a thick red cubic spline. The synchronized publisher sends the complete
+filtered episode range when Maya connects, so path creation does not depend on
+playback. Changing the smoother rebuilds the full paths automatically. The path
+builder rejects non-finite samples and isolated discontinuity spikes before fitting
+the spline. The generated curves are parented under
+`blacknodeDatasetDebugPaths`; **Clear debug paths** deletes them. Editing a joint
+mapping evaluates the cached full trajectory again for the new rig target.
+The status line confirms when a curve is ready and identifies a mapped node that
+has no world-space movement, which is common for a root or fixed rotation control.
+Live Maya playback keeps only the newest received WebSocket frame and applies it
+from a Maya idle callback, dropping stale frames when Maya is busy instead of
+building latency. The complete trajectory is evaluated only when at least one
+**Path** checkbox is enabled, once when that path is requested or when its
+trajectory/mapping changes; individual streamed frames never rebuild the path.
+
+### Running inside Isaac Sim
+
+For a persistent menu entry, open **Window → Extensions**, add this Extension
+Manager search path, and enable **Blacknode Dataset Replay**:
+
+```text
+E:\F\PROJECTS\NVDIA\Blacknode\packages\blacknode-dataset\clients\isaac_extension\exts
+```
+
+Isaac then provides **Window → Blacknode Dataset Replay** on current and future
+runs after the extension is enabled.
+
+Open **Window → Script Editor** and run these two lines:
+
+```python
+exec(open(r"<repo>/packages/blacknode-dataset/clients/isaac_sim_stream.py").read())
+show_blacknode_isaac_window()
+```
+
+Enter the `StreamPublisher.stream_url` and the USD path of the robot's
+articulation root, or select a prim in the Stage and click **Use selected prim**.
+Then click **Connect**. The client starts the simulation
+timeline when needed and matches dataset joints to articulation DOFs by exact
+name. Unmatched DOFs retain their current targets. Dataset Browser play and seek
+poses drive the simulated articulation directly. This path uses the WebSocket
+directly and does not require ROS 2 or a terminal.
+
+After the articulation loads, the window lists every dataset joint. Select the
+matching Isaac DOF or `(ignore)`, and choose `+1` or `-1` to reverse its direction.
+Outside calibration mode, **Joint Angle** follows the articulation's measured
+position in real time, including motion caused by streaming and physics. During
+calibration it changes to **Angle Nudge** and retains the relative adjustment.
+Each angle row includes a numeric field beside the slider. Type an exact value
+and press Enter to apply it; the field uses the same units, limits, and
+calibration behavior as the slider.
+Use **Motion Scale** when a simulated joint has a different usable range than
+the recorded robot joint. A value above `1` increases travel and a value below
+`1` decreases it. This is especially useful for grippers whose finger spacing
+does not map one-to-one to the recorded actuator angle. Scale changes reapply
+the current replay frame immediately and are saved with the joint mapping.
+The joint axis is shown as `USD`: Isaac position commands are scalar DOF targets,
+so the physical X/Y/Z axis comes from the USD joint definition and is not changed
+by this mapping panel.
+
+To calibrate a simulator model against the real robot's home pose, move each
+joint with its **Joint Angle** slider. Use the **Angle units** switch to work in
+degrees (default) or radians. Slider movement commands that Isaac DOF immediately.
+The slider limits come from the Isaac USD articulation limits, so values outside
+those limits cannot be commanded. Stop or pause Browser playback while posing
+the robot. When the
+complete simulator pose matches the real robot's home, click **Set Home Pose**.
+If a commanded slider value is held back by a collision or other physical
+constraint, the client detects the stall, clamps that side of the slider to the
+reached pose, snaps the slider and numeric field back to the measured angle,
+and reports the condition in red. Detection uses lack of progress toward the
+target, so small contact jitter does not allow the control to keep increasing.
+The client records every mapped simulator value against the dataset's first
+trajectory frame as the dataset home. Subsequent streamed targets use:
+`sim_home + direction * (dataset_value - dataset_home)`. Stop or pause Browser
+playback while applying homes so the next streamed frame does not immediately
+override the calibration pose. URL, prim path, unit choice, DOF mappings,
+directions, slider values, and home calibration are saved in Isaac's persistent
+settings and restored next time.
+
+Use **Go Home** to apply the saved calibration pose again.
+**Go Home** also exits calibration-nudge mode and resets all angle sliders to
+zero. For incremental calibration, click **Calibrate**: the current simulator
+pose becomes the nudge baseline and every angle slider resets to zero without
+moving the robot. Adjust only the required joints, then click **Add to Home
+Pose**. The reached simulator positions are added to the saved home pose and the
+nudge sliders reset to zero, ready for another small adjustment.
+Only joints whose measured pose changed are updated, using
+`new_home = previous_home + (current_pose - nudge_baseline)`. Incoming replay
+frames are held while **CALIBRATING**, so streamed movement cannot be folded
+into the home pose accidentally.
+Press the orange **CALIBRATING** button again to cancel nudge mode. Cancelling
+keeps the robot at its current pose, restores absolute **Joint Angle** values,
+and does not modify the saved home pose.
+
+Calibration is also written as a portable Blacknode artifact at
+`~/.blacknode/calibrations/isaac/<articulation-name>.json`. **Save Calibration
+File** writes it explicitly and **Load Calibration File** restores its mappings,
+home pose, display units, and drive settings without moving the robot. The
+versioned `blacknode.isaac-articulation-calibration` JSON stores simulator home
+positions in radians and can be loaded by later Isaac or reinforcement-learning
+code independently of Isaac's private user settings.
+
+Click **Discover Joints** after selecting or typing the articulation root. The
+client scans its descendants and matches USD joint prims to the selected Isaac
+DOFs. Each joint row provides **Stiffness**, **Damping**, and **Max Force**
+fields. Changes apply immediately to the joint's angular or linear USD drive;
+**Apply Drive Settings** reapplies every saved value. Drive settings persist in
+Isaac settings with the mappings and home calibration. A green `found` label
+confirms the joint prim mapping; a red `missing` label requires correcting the
+articulation root or Isaac DOF selection.
+
+Use `ros2_bridge.py` when ROS 2 is already part of the simulation graph. Use
+`isaac_lab_client.py` for an Isaac Lab application that owns its articulation and
+simulation loop.
 
 ## Add another app
 

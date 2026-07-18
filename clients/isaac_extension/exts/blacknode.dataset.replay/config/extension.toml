@@ -1,0 +1,21 @@
+[package]
+version = "0.1.0"
+title = "Blacknode Dataset Replay"
+description = "Open the Blacknode dataset streaming and robot calibration window from Isaac Sim."
+category = "Robotics"
+authors = ["Blacknode"]
+repository = "https://github.com/temiroff/blacknode-dataset"
+readme = "docs/README.md"
+keywords = ["blacknode", "dataset", "robot", "replay", "calibration"]
+writeTarget.kit = true
+
+[core]
+reloadable = true
+
+[dependencies]
+"omni.kit.menu.utils" = {}
+"omni.kit.uiapp" = {}
+"omni.usd" = {}
+
+[[python.module]]
+name = "blacknode_dataset_replay"

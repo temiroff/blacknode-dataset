@@ -70,11 +70,18 @@ def _get_image(handle: dict[str, Any], timeout: float) -> tuple[bytes, dict[str,
         raise ValueError("camera stream is missing snapshot_url")
     with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - local stream handle is user input
         content = response.read()
-        return content, {
+        meta = {
             "sequence": int(response.headers.get("X-Blacknode-Frame-Sequence") or 0),
             "captured_at_ns": int(response.headers.get("X-Blacknode-Captured-At-Ns") or 0),
             "media_type": str(response.headers.get_content_type() or "image/jpeg"),
         }
+        # Preserve optional camera calibration supplied by the stream handle.
+        # A plain JPEG cannot carry reliable FOV/intrinsics by itself.
+        for key in ("fov_horizontal", "fov_vertical", "fx", "fy", "cx", "cy",
+                    "distortion", "camera_model", "calibration"):
+            if key in handle:
+                meta[key] = handle[key]
+        return content, meta
 
 
 def _stream_url(handle: dict[str, Any]) -> str:
@@ -661,6 +668,7 @@ def apply_configured_smoother(node_id: str, method: str, strength: float,
         new_token = str(info.get("token") or "")
         updated_publishers = 0
         refresh_targets: list[tuple[Any, int]] = []
+        trajectory_targets: list[Any] = []
         with _lock:
             current = dict(_smoother_configs.get(node_id) or {})
             current.update({
@@ -682,8 +690,10 @@ def apply_configured_smoother(node_id: str, method: str, strength: float,
                         publisher.joint_names = list(info.get("joint_names") or publisher.joint_names)
                         publisher.fps = float(info.get("fps") or publisher.fps)
                         publisher.units = str(info.get("units") or publisher.units)
-                        if publisher.sync_to_browser and publisher.sent > 0:
-                            refresh_targets.append((publisher, publisher.frame_index))
+                        if publisher.sync_to_browser:
+                            trajectory_targets.append(publisher)
+                            if publisher.sent > 0:
+                                refresh_targets.append((publisher, publisher.frame_index))
                     updated_publishers += 1
                 token_still_used = any(
                     item.get("output_token") == old_token
@@ -693,6 +703,10 @@ def apply_configured_smoother(node_id: str, method: str, strength: float,
                     _replay_sessions.pop(old_token, None)
                     _replay_tables.pop(old_token, None)
                     _replay_media.pop(old_token, None)
+        trajectories_refreshed = 0
+        for publisher in trajectory_targets:
+            publisher.refresh_trajectory("smoother_update")
+            trajectories_refreshed += 1
         refreshed_poses = 0
         for publisher, frame_index in refresh_targets:
             frame = replay_frame(new_token, frame_index)
@@ -701,6 +715,7 @@ def apply_configured_smoother(node_id: str, method: str, strength: float,
             publisher._broadcast(frame, frame_index, "smoother_update")
             refreshed_poses += 1
         info["publishers_updated"] = updated_publishers
+        info["trajectories_refreshed"] = trajectories_refreshed
         info["poses_refreshed"] = refreshed_poses
         outputs = smoother_outputs(info)
         suffix = (f"; updated {updated_publishers} running publisher(s)" if updated_publishers
@@ -860,6 +875,47 @@ class StreamPublisher:
         self.thread = threading.Thread(target=self._loop, daemon=True,
                                        name=f"blacknode-stream-{self.run_id}")
         self.thread.start()
+
+    def _trajectory_payload(self, kind: str = "blacknode.stream-schema") -> dict[str, Any]:
+        """Build the complete replay trajectory for subscribers that render full paths."""
+        with self.lock:
+            token = self.token
+            frame_count = self.frames
+            names = list(self.joint_names)
+            source = self.source
+            fps = self.fps
+            units = self.units
+        trajectory: list[list[float]] = []
+        smoothing: dict[str, Any] = {}
+        for index in range(frame_count):
+            frame = replay_frame(token, index)
+            if frame is None:
+                break
+            joints = dict(frame.get(source) or {})
+            trajectory.append([float(joints.get(name, 0.0)) for name in names])
+            if not smoothing:
+                smoothing = dict(frame.get("smoothing") or {})
+        payload: dict[str, Any] = {
+            "kind": kind,
+            "schema_version": 1,
+            "joint_names": names,
+            "source": source,
+            "units": units,
+            "positions": [],
+            "trajectory": trajectory,
+            "frames": len(trajectory),
+            "fps": fps,
+        }
+        if smoothing:
+            payload["smoothing"] = smoothing
+        return payload
+
+    def refresh_trajectory(self, playback_event: str = "trajectory_refresh") -> int:
+        """Update new-client schema and send the complete trajectory to current clients."""
+        schema = self._trajectory_payload()
+        self.server.initial_text = json.dumps(schema)
+        payload = {**schema, "playback_event": playback_event}
+        return self.server.broadcast(json.dumps(payload))
 
     def _broadcast(self, frame: dict[str, Any], index: int, playback_event: str = "autoplay") -> int:
         names = list(frame.get("joint_names") or [])
@@ -1060,14 +1116,7 @@ def start_stream(*, run_id: str, stream: Any, host: str, port: int, fps: float,
         joint_names = list(session.get("joint_names") or [])
         resolved_fps = float(fps or 0) or float(session.get("fps") or 0) or 30.0
         resolved_units = str(units or session.get("units") or "radians")
-    schema = json.dumps({
-        "kind": "blacknode.stream-schema", "schema_version": 1,
-        "joint_names": joint_names, "source": source, "units": resolved_units,
-        "positions": [], "frames": frames, "fps": resolved_fps,
-    })
-    server = wsserver.WsBroadcastServer(
-        host, int(port), initial_text=schema if mode == "replay" and sync_to_browser else "",
-    )
+    server = wsserver.WsBroadcastServer(host, int(port))
     publisher = StreamPublisher(
         run_id=run_id, mode=mode, token=token, url=url,
         host=str(host or "127.0.0.1"), port=int(port),
@@ -1075,6 +1124,8 @@ def start_stream(*, run_id: str, stream: Any, host: str, port: int, fps: float,
         units=resolved_units, sync_to_browser=bool(sync_to_browser), server=server,
         frames=frames, joint_names=joint_names,
     )
+    if mode == "replay" and sync_to_browser:
+        server.initial_text = json.dumps(publisher._trajectory_payload("blacknode.stream-schema"))
     try:
         publisher.start()
     except OSError as exc:

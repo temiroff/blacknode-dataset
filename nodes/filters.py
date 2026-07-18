@@ -95,24 +95,31 @@ def _savgol(arr: np.ndarray, window: int, polyorder: int = 3) -> np.ndarray:
 
 
 def smooth_columns(arr: np.ndarray, method: str, strength: float, fps: float) -> tuple[np.ndarray, str]:
-    """Smooth an ``[T, J]`` array column-wise. Returns (smoothed, effective_method)."""
+    """Smooth ``[T, J]`` columns while preserving exact episode endpoints."""
     method = str(method or "spline").lower()
     strength = max(0.0, float(strength))
     if arr.shape[0] < 3 or method == "none":
         return arr.astype(float), "none"
     if method in {"spline", "savgol"} and not _HAS_SCIPY:
         method = "gaussian"  # graceful fallback; reported to the user
+    smoothed: np.ndarray
     if method == "spline":
-        return _spline(arr, lam=strength), "spline"
-    if method == "savgol":
-        return _savgol(arr, window=int(round(strength * 10)) + 3), "savgol"
-    if method == "gaussian":
-        return _gaussian(arr, sigma=max(0.5, strength * 2.0)), "gaussian"
-    if method == "moving_average":
-        return _moving_average(arr, window=int(round(strength * 6)) + 1), "moving_average"
-    if method == "one_euro":
-        return _one_euro(arr, fps=fps, mincutoff=1.0 / max(0.1, strength), beta=0.007), "one_euro"
-    return _gaussian(arr, sigma=max(0.5, strength * 2.0)), "gaussian"
+        smoothed, effective = _spline(arr, lam=strength), "spline"
+    elif method == "savgol":
+        smoothed, effective = _savgol(arr, window=int(round(strength * 10)) + 3), "savgol"
+    elif method == "gaussian":
+        smoothed, effective = _gaussian(arr, sigma=max(0.5, strength * 2.0)), "gaussian"
+    elif method == "moving_average":
+        smoothed, effective = _moving_average(arr, window=int(round(strength * 6)) + 1), "moving_average"
+    elif method == "one_euro":
+        smoothed, effective = _one_euro(
+            arr, fps=fps, mincutoff=1.0 / max(0.1, strength), beta=0.007), "one_euro"
+    else:
+        smoothed, effective = _gaussian(arr, sigma=max(0.5, strength * 2.0)), "gaussian"
+    smoothed = np.asarray(smoothed, dtype=float).copy()
+    smoothed[0, :] = arr[0, :]
+    smoothed[-1, :] = arr[-1, :]
+    return smoothed, effective
 
 
 def jerk_rms(arr: np.ndarray) -> float:

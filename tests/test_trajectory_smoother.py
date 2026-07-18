@@ -88,6 +88,23 @@ def test_smoothing_reduces_jerk_and_mints_token(episode, method):
     assert "smoothing" in frame
 
 
+@pytest.mark.parametrize("method", ["spline", "gaussian", "savgol", "moving_average", "one_euro"])
+def test_smoothing_preserves_exact_first_and_last_samples(method):
+    import numpy as np
+
+    raw = np.asarray([
+        [0.25, -1.5],
+        [2.0, 3.0],
+        [-1.0, 4.0],
+        [8.0, -2.0],
+        [1.75, 0.5],
+    ], dtype=float)
+    smoothed, _ = filters.smooth_columns(raw, method, strength=1.0, fps=60)
+
+    np.testing.assert_array_equal(smoothed[0], raw[0])
+    np.testing.assert_array_equal(smoothed[-1], raw[-1])
+
+
 def test_smoothed_stream_streams_through_publisher(episode):
     info = rt.register_smoothed_replay("raw", "spline", strength=1.0)
     handle = {"kind": "blacknode.replay-stream", "token": info["token"]}
@@ -140,6 +157,10 @@ def test_parameter_update_only_recomputes_smoother_and_hot_swaps_publisher(episo
         with rt._lock:
             assert first_token not in rt._replay_sessions
 
+        trajectory = stream.recv_json()
+        assert trajectory["kind"] == "blacknode.stream-schema"
+        assert trajectory["frames"] == _FRAMES
+        assert trajectory["smoothing"] == {"method": "gaussian", "strength": 2.0}
         frame = stream.recv_json()
         assert frame["frame_index"] == 20
         assert frame["smoothing"] == {"method": "gaussian", "strength": 2.0}

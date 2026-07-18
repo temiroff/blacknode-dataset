@@ -38,7 +38,7 @@ not affect dataset contents or portability.
 | --- | --- |
 | `DatasetCreate` | Create or reopen a dataset with a stable task, FPS, robot type, and metadata. |
 | `DatasetBrowser` | Pick a storage root, dataset, episode, and camera, replay or trim it, and inspect synchronized robot and timing data. |
-| `TrajectorySmoother` | Smooth a recorded episode's joint trajectories offline (zero-lag B-spline / Gaussian / Savitzky-Golay / One-Euro) and emit a new `stream` handle. Read-only. |
+| `TrajectorySmoother` | Smooth a recorded episode's joint trajectories offline (zero-lag B-spline / Gaussian / Savitzky-Golay / One-Euro), preserve its exact endpoint poses, and emit a new `stream` handle. Read-only. |
 | `StreamPublisher` | Publish Browser-synchronized replay poses or a live sample stream over a plain WebSocket for Maya, ROS 2, Isaac Sim, and other subscribers. Read-only; never commands hardware. |
 | `DatasetCameraStreamList` | Collect any number of camera stream handles through dynamic sockets. |
 | `EpisodeRecorder` | Start, pause, resume, save/finalize, stop, or discard a recording and render its live camera and capture-health dashboard. |
@@ -147,7 +147,11 @@ the port.
 The self-contained `clients/maya_stream.py` window provides **Get joints /
 Connect**. It receives joint names without changing the rig, lets each dataset
 joint target a Maya attribute with X/Y/Z axis, +1/-1 direction, and scale, then
-stores that mapping in Maya preferences. Rig values change only when Browser
+stores that mapping in Maya preferences. A per-joint **Path** checkbox draws the
+mapped rig node's complete filtered episode trajectory as a thick red Maya
+spline, with isolated discontinuity spikes rejected for motion debugging. Path
+generation does not require playback and refreshes when smoother settings change.
+Rig values change only when Browser
 playback or timeline seeking publishes a pose.
 
 ### Smooth shaky trajectories before streaming
@@ -156,7 +160,8 @@ Insert a `TrajectorySmoother` between the browser and the publisher
 (`DatasetBrowser.stream → TrajectorySmoother.stream → StreamPublisher.stream`) to
 calm jittery recordings before they drive an app. Because replay has the whole
 episode available, the filters are **non-causal and zero-lag** — the smoothed
-motion has no added latency:
+motion has no added latency. Every method preserves the exact first and last
+sample of every joint, so smoothing cannot shift the episode's start or finish:
 
 | `method` | Filter | Needs |
 | --- | --- | --- |
@@ -189,13 +194,14 @@ same curve is fit offline to recorded trajectories purely to smooth them for
 replay and streaming.
 
 Example subscribers ship in [`clients/`](clients/README.md), one small file per
-app, all built on a dependency-free WebSocket client that runs unchanged inside
-mayapy, an Isaac Lab environment, or a ROS 2 node:
+app, using a dependency-free WebSocket transport inside Maya, Isaac Sim, Isaac
+Lab, or a ROS 2 node:
 
 | Client | Runs in | Maps the stream to |
 | --- | --- | --- |
 | `clients/ros2_bridge.py` | a sourced ROS 2 / WSL Python | `sensor_msgs/JointState` on a topic |
 | `clients/maya_client.py` | Maya / `mayapy` | rig attributes via a joint→attribute map |
+| `clients/isaac_sim_stream.py` | Isaac Sim Script Editor | articulation DOF position targets |
 | `clients/isaac_lab_client.py` | Isaac Lab Python | articulation joint position targets |
 
 Adding another target is one more subscriber file — no Blacknode change is
@@ -277,7 +283,8 @@ outputs.
 `action` trajectories are filtered per-episode (zero-lag, never across episode
 boundaries) before writing, so a policy trains on the intended motion rather than
 teleoperation jitter. `spline`/`savgol` need SciPy; the numpy-only methods always
-work. The choice is recorded in the export (`smoothing` attribute in HDF5,
+work. The first and last sample of each episode remain exact. The choice is
+recorded in the export (`smoothing` attribute in HDF5,
 `smoothing` field in `blacknode-export.json`). With `smoothing=none` the export is
 byte-for-byte unchanged. This is the same zero-lag filter family as the
 `TrajectorySmoother` streaming node, applied here at export time instead.
