@@ -185,11 +185,17 @@ def test_browser_synchronized_publisher_waits_then_emits_play_and_seek(stubbed):
 def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     source = (_CLIENTS / "maya_stream.py").read_text(encoding="utf-8")
     assert "Get joints / Connect" in source
+    assert 'globals().get("_state")' in source
+    assert "previous_thread.join(timeout=1.0)" in source
+    assert 'previous_socket.close()' in source
     assert "blacknode.stream-schema" in source
     assert "cmds.optionVar" in source
     assert 'for value in ("X", "Y", "Z")' in source
     assert 'label="-1"' in source
     assert 'label="Path"' in source
+    assert "onCommand=lambda" in source
+    assert "offCommand=lambda" in source
+    assert "changeCommand=lambda enabled" not in source
     assert "cmds.xform(node, query=True, worldSpace=True, translation=True)" in source
     assert "cmds.curve" in source
     assert "editPoint=points" in source
@@ -197,13 +203,16 @@ def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     assert '("lineWidth", (4.0,))' in source
     assert "_reject_discontinuity_outliers" in source
     assert "_build_full_trajectory_paths" in source
+    assert "_trajectory_sample_indices" in source
     assert "_on_path_changed" in source
     assert "full episode path ready" in source
     assert "path has no world-space movement" in source
     assert "_drain_pending" in source
     assert '"latest_frame"' in source
+    assert "def _run(url, state):" in source
     assert "stale dropped" in source
     assert "cmds.scriptJob(idleEvent=_drain_pending" in source
+    assert "_set_stream_status" in source
     assert "executeInMainThreadWithResult" not in source
     assert "_capture_debug_paths" not in source
     assert "Clear debug paths" in source
@@ -227,6 +236,23 @@ def test_maya_path_filter_drops_isolated_spike_but_keeps_sustained_motion():
                              (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)]
     sustained = [(0, 0, 0), (1, 0, 0), (100, 0, 0), (101, 0, 0), (102, 0, 0)]
     assert reject(sustained) == [tuple(float(value) for value in point) for point in sustained]
+
+
+def test_maya_path_sampling_covers_full_range_with_exact_endpoints():
+    source = (_CLIENTS / "maya_stream.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(node for node in tree.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "_trajectory_sample_indices")
+    function.args.defaults = [ast.Constant(value=600)]
+    namespace = {}
+    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
+    exec(compile(module, "maya_path_sampling", "exec"), namespace)
+
+    indices = namespace["_trajectory_sample_indices"](10_000)
+    assert indices[0] == 0
+    assert indices[-1] == 9_999
+    assert len(indices) <= 600
+    assert indices == sorted(set(indices))
 
 
 def test_isaac_sim_script_editor_client_is_self_contained_and_safe_for_unmatched_dofs():

@@ -121,16 +121,21 @@ motion as a thick red cubic spline. The synchronized publisher sends the complet
 filtered episode range when Maya connects, so path creation does not depend on
 playback. Changing the smoother rebuilds the full paths automatically. The path
 builder rejects non-finite samples and isolated discontinuity spikes before fitting
-the spline. The generated curves are parented under
+the spline. Large episodes are sampled evenly across the complete range, always
+including the exact first and last frames, to keep the one-time Maya evaluation
+responsive. The generated curves are parented under
 `blacknodeDatasetDebugPaths`; **Clear debug paths** deletes them. Editing a joint
 mapping evaluates the cached full trajectory again for the new rig target.
 The status line confirms when a curve is ready and identifies a mapped node that
 has no world-space movement, which is common for a root or fixed rotation control.
 Live Maya playback keeps only the newest received WebSocket frame and applies it
 from a Maya idle callback, dropping stale frames when Maya is busy instead of
-building latency. The complete trajectory is evaluated only when at least one
+building latency. Status text is repainted at most four times per second so it
+does not slow pose application. The complete trajectory is evaluated only when at least one
 **Path** checkbox is enabled, once when that path is requested or when its
 trajectory/mapping changes; individual streamed frames never rebuild the path.
+Executing `maya_stream.py` again closes the previous receiver automatically, so
+reloading the client does not leave duplicate WebSocket threads in Maya.
 
 ### Running inside Isaac Sim
 
