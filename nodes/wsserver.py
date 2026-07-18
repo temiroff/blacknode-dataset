@@ -23,7 +23,11 @@ def _accept_key(key: str) -> str:
 
 
 def _encode_text(payload: bytes) -> bytes:
-    header = bytearray([0x81])  # FIN + text opcode, unmasked (server -> client)
+    return _encode_frame(0x1, payload)
+
+
+def _encode_frame(opcode: int, payload: bytes) -> bytes:
+    header = bytearray([0x80 | (opcode & 0x0F)])  # FIN + opcode, unmasked server frame
     length = len(payload)
     if length < 126:
         header.append(length)
@@ -46,6 +50,7 @@ class WsBroadcastServer:
         self._srv: socket.socket | None = None
         self._clients: set[socket.socket] = set()
         self._lock = threading.RLock()
+        self._write_lock = threading.Lock()
         self._accept_thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -82,14 +87,12 @@ class WsBroadcastServer:
                 self._clients.add(conn)
             if self.initial_text:
                 try:
-                    conn.sendall(_encode_text(self.initial_text.encode("utf-8")))
+                    self._send(conn, _encode_text(self.initial_text.encode("utf-8")))
                 except OSError:
-                    with self._lock:
-                        self._clients.discard(conn)
-                    try:
-                        conn.close()
-                    except OSError:
-                        pass
+                    self._remove_client(conn)
+                    continue
+            threading.Thread(target=self._client_loop, args=(conn,), daemon=True,
+                             name=f"blacknode-ws-client-{self.port}").start()
 
     def _handshake(self, conn: socket.socket) -> None:
         conn.settimeout(5.0)
@@ -116,6 +119,64 @@ class WsBroadcastServer:
         conn.sendall(response.encode("latin1"))
         conn.settimeout(None)
 
+    @staticmethod
+    def _read_exact(conn: socket.socket, count: int) -> bytes:
+        data = b""
+        while len(data) < count:
+            chunk = conn.recv(count - len(data))
+            if not chunk:
+                raise ConnectionError("WebSocket client disconnected")
+            data += chunk
+        return data
+
+    def _send(self, conn: socket.socket, frame: bytes) -> None:
+        # Serialize writes so broadcasts and close/pong replies cannot interleave.
+        with self._write_lock:
+            conn.sendall(frame)
+
+    def _remove_client(self, conn: socket.socket) -> None:
+        with self._lock:
+            self._clients.discard(conn)
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+    def _client_loop(self, conn: socket.socket) -> None:
+        """Drain client frames and remove the subscriber immediately on close/EOF."""
+        try:
+            while not self._stop.is_set():
+                first, second = self._read_exact(conn, 2)
+                opcode = first & 0x0F
+                masked = bool(second & 0x80)
+                length = second & 0x7F
+                if length == 126:
+                    length = struct.unpack(">H", self._read_exact(conn, 2))[0]
+                elif length == 127:
+                    length = struct.unpack(">Q", self._read_exact(conn, 8))[0]
+                if length > 16 * 1024 * 1024:
+                    raise ValueError("client WebSocket frame is too large")
+                mask = self._read_exact(conn, 4) if masked else b""
+                payload = self._read_exact(conn, length) if length else b""
+                if masked:
+                    payload = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+                if opcode == 0x8:  # close
+                    try:
+                        self._send(conn, _encode_frame(0x8, payload[:125]))
+                    except OSError:
+                        pass
+                    break
+                if opcode == 0x9:  # ping
+                    self._send(conn, _encode_frame(0xA, payload[:125]))
+        except (ConnectionError, OSError, ValueError):
+            pass
+        finally:
+            self._remove_client(conn)
+
     def broadcast(self, text: str) -> int:
         frame = _encode_text(text.encode("utf-8"))
         with self._lock:
@@ -123,18 +184,12 @@ class WsBroadcastServer:
         dead: list[socket.socket] = []
         for conn in clients:
             try:
-                conn.sendall(frame)
+                self._send(conn, frame)
             except OSError:
                 dead.append(conn)
         if dead:
-            with self._lock:
-                for conn in dead:
-                    self._clients.discard(conn)
             for conn in dead:
-                try:
-                    conn.close()
-                except OSError:
-                    pass
+                self._remove_client(conn)
         return len(clients) - len(dead)
 
     def client_count(self) -> int:
