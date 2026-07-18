@@ -37,6 +37,12 @@ _STATUS = "bnStreamStatus"
 _JOINTS_COL = "bnStreamJoints"
 _MAPPING_OPTION = "blacknodeDatasetJointMappingV1"
 _PATH_GROUP = "blacknodeDatasetDebugPaths"
+_PATH_COLORS = (
+    (1.0, 0.15, 0.15), (0.15, 0.9, 0.25), (0.2, 0.45, 1.0),
+    (1.0, 0.8, 0.1), (1.0, 0.2, 0.85), (0.1, 0.9, 0.95),
+    (1.0, 0.45, 0.1), (0.65, 0.3, 1.0), (0.55, 1.0, 0.15),
+    (0.2, 0.7, 1.0),
+)
 
 # Script Editor reload safety: stop the receiver created by a previous exec().
 _previous_state = globals().get("_state")
@@ -154,7 +160,8 @@ def apply_mapping(rebuild_paths=False):
     for name in _path_curves:
         _set_path_visibility(name, False)
     JOINT_MAP.clear()
-    for name, (attr_ctrl, axis_ctrl, sign_ctrl, magnitude_ctrl, path_ctrl) in _rows.items():
+    for color_index, (name, controls) in enumerate(_rows.items()):
+        attr_ctrl, axis_ctrl, sign_ctrl, magnitude_ctrl, path_ctrl = controls
         attr = cmds.textField(attr_ctrl, query=True, text=True).strip()
         if not attr:
             continue
@@ -166,7 +173,8 @@ def apply_mapping(rebuild_paths=False):
         magnitude = max(0.0, float(cmds.floatField(magnitude_ctrl, query=True, value=True)))
         JOINT_MAP[name] = {"attr": attr, "axis": axis, "sign": int(sign),
                            "magnitude": magnitude, "scale": sign * magnitude,
-                           "debug_path": bool(cmds.checkBox(path_ctrl, query=True, value=True))}
+                           "debug_path": bool(cmds.checkBox(path_ctrl, query=True, value=True)),
+                           "path_color": _PATH_COLORS[color_index % len(_PATH_COLORS)]}
         _set_path_visibility(name, JOINT_MAP[name]["debug_path"])
     _save_mapping()
     _refresh_debug_paths(force=True)
@@ -203,8 +211,10 @@ def _on_path_changed(name, enabled):
         _set_status(f"Path error: publisher sent {received}/{expected} trajectory frames; reload and restart StreamPublisher")
     elif name in result.get("built", []):
         repaired = int(result.get("repaired") or 0)
-        suffix = f"; ignored/repaired {repaired} unusual value(s)" if repaired else ""
-        _set_status(f"{name} full episode path ready from every frame{suffix}")
+        cuts = int(result.get("cuts") or 0)
+        segments = int(result.get("segments") or 0)
+        _set_status(f"{name} path ready: {segments} segment(s), {cuts} gap cut(s), "
+                    f"{repaired} unusual value(s) repaired")
     elif name in result.get("stationary", []):
         _set_status(f"{name} path has no world-space movement on mapped node {node}")
     else:
@@ -254,49 +264,73 @@ def _build_rows(names):
     apply_mapping()
 
 
-def _curve_name(name):
+def _curve_name(name, segment_index):
     safe = "".join(character if character.isalnum() or character == "_" else "_" for character in name)
-    return f"bnPath_{safe}"
+    return f"bnPath_{safe}_{segment_index + 1:03d}"
 
 
 def _set_path_visibility(name, visible):
-    curve = _path_curves.get(name)
-    if curve and cmds.objExists(curve):
-        cmds.setAttr(f"{curve}.visibility", bool(visible))
+    curves = _path_curves.get(name) or []
+    if isinstance(curves, str):
+        curves = [curves]
+    for curve in curves:
+        if curve and cmds.objExists(curve):
+            cmds.setAttr(f"{curve}.visibility", bool(visible))
 
 
 def _rebuild_debug_path(name):
     points = [_path_points[name][index] for index in sorted(_path_points.get(name, {}))]
     points = _reject_discontinuity_outliers(points)
     points = [point for index, point in enumerate(points) if index == 0 or point != points[index - 1]]
-    if len(points) < 2:
-        return False
-    curve = _path_curves.get(name)
-    degree = min(3, len(points) - 1)
-    if curve and cmds.objExists(curve):
-        curve = cmds.curve(curve, replace=True, degree=degree, editPoint=points)
-    else:
-        if not cmds.objExists(_PATH_GROUP):
-            cmds.group(empty=True, name=_PATH_GROUP)
-        curve = cmds.curve(name=_curve_name(name), degree=degree, editPoint=points)
+    segments, cuts, _ = _split_path_segments(points)
+    old_curves = _path_curves.pop(name, []) or []
+    if isinstance(old_curves, str):
+        old_curves = [old_curves]
+    for curve in old_curves:
+        if cmds.objExists(curve):
+            cmds.delete(curve)
+    if not segments:
+        return {"built": False, "segments": 0, "cuts": cuts, "fallbacks": 0}
+    if not cmds.objExists(_PATH_GROUP):
+        cmds.group(empty=True, name=_PATH_GROUP)
+    color = tuple((JOINT_MAP.get(name) or {}).get("path_color") or _PATH_COLORS[0])
+    created = []
+    fallbacks = 0
+    for segment_index, segment in enumerate(segments):
+        curve_name = _curve_name(name, segment_index)
+        degree = min(3, len(segment) - 1)
+        try:
+            curve = cmds.curve(name=curve_name, degree=degree, editPoint=segment)
+        except Exception as cubic_error:  # noqa: BLE001 - Maya can reject degenerate cubic input
+            try:
+                curve = cmds.curve(name=curve_name, degree=1, point=segment)
+                fallbacks += 1
+            except Exception as linear_error:  # noqa: BLE001
+                for partial_curve in created:
+                    if cmds.objExists(partial_curve):
+                        cmds.delete(partial_curve)
+                raise RuntimeError(
+                    f"segment {segment_index + 1} curve failed; cubic: {cubic_error}; linear: {linear_error}"
+                ) from linear_error
         cmds.parent(curve, _PATH_GROUP)
-        _path_curves[name] = curve
-    shape = (cmds.listRelatives(curve, shapes=True, fullPath=True) or [None])[0]
-    if shape:
-        for attribute, values in (
-            ("overrideEnabled", (1,)),
-            ("overrideRGBColors", (1,)),
-            ("overrideColorRGB", (1.0, 0.0, 0.0)),
-            ("lineWidth", (4.0,)),
-        ):
-            plug = f"{shape}.{attribute}"
-            if cmds.objExists(plug):
-                try:
-                    cmds.setAttr(plug, *values)
-                except Exception:  # noqa: BLE001 - keep the curve if one display option is unsupported
-                    pass
+        created.append(curve)
+        shape = (cmds.listRelatives(curve, shapes=True, fullPath=True) or [None])[0]
+        if shape:
+            for attribute, values in (
+                ("overrideEnabled", (1,)),
+                ("overrideRGBColors", (1,)),
+                ("overrideColorRGB", color),
+                ("lineWidth", (4.0,)),
+            ):
+                plug = f"{shape}.{attribute}"
+                if cmds.objExists(plug):
+                    try:
+                        cmds.setAttr(plug, *values)
+                    except Exception:  # noqa: BLE001 - keep the curve if one display option is unsupported
+                        pass
+    _path_curves[name] = created
     _set_path_visibility(name, bool((JOINT_MAP.get(name) or {}).get("debug_path")))
-    return True
+    return {"built": True, "segments": len(created), "cuts": cuts, "fallbacks": fallbacks}
 
 
 def _refresh_debug_paths(force=False):
@@ -306,12 +340,16 @@ def _refresh_debug_paths(force=False):
     if not force:
         return
     selection = cmds.ls(selection=True, long=True) or []
-    result = {"built": [], "stationary": [], "errors": {}}
+    result = {"built": [], "stationary": [], "errors": {}, "segments": 0, "cuts": 0, "fallbacks": 0}
     try:
         for name in enabled:
             try:
-                bucket = "built" if _rebuild_debug_path(name) else "stationary"
+                path = _rebuild_debug_path(name)
+                bucket = "built" if path["built"] else "stationary"
                 result[bucket].append(name)
+                result["segments"] += int(path.get("segments") or 0)
+                result["cuts"] += int(path.get("cuts") or 0)
+                result["fallbacks"] += int(path.get("fallbacks") or 0)
             except Exception as exc:  # noqa: BLE001 - debug drawing must not interrupt rig replay
                 result["errors"][name] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -330,6 +368,33 @@ def _distance(a, b):
 def _median(values):
     ordered = sorted(values)
     return ordered[(len(ordered) - 1) // 2]
+
+
+def _split_path_segments(points):
+    """Cut a world-space path wherever adjacent samples have an unusual gap."""
+    if len(points) < 2:
+        return [], 0, 0.0
+    steps = [_distance(points[index - 1], points[index]) for index in range(1, len(points))]
+    nonzero_steps = [step for step in steps if step > 1e-9]
+    if not nonzero_steps:
+        return [], 0, 0.0
+    typical = _median(nonzero_steps)
+    deviation = _median([abs(step - typical) for step in nonzero_steps])
+    threshold = max(typical * 8.0, typical + deviation * 8.0, 1e-4)
+    segments = []
+    current = [points[0]]
+    cuts = 0
+    for point, step in zip(points[1:], steps):
+        if step > threshold:
+            if len(current) >= 2:
+                segments.append(current)
+            current = [point]
+            cuts += 1
+        else:
+            current.append(point)
+    if len(current) >= 2:
+        segments.append(current)
+    return segments, cuts, threshold
 
 
 def _reject_discontinuity_outliers(points):
@@ -440,7 +505,8 @@ def _build_full_trajectory_paths(message):
     trajectory = list(message.get("trajectory") or [])
     names = list(message.get("joint_names") or [])
     enabled = {name for name, target in JOINT_MAP.items() if target.get("debug_path")}
-    empty = {"built": [], "stationary": [], "errors": {}, "missing": False, "repaired": 0}
+    empty = {"built": [], "stationary": [], "errors": {}, "missing": False, "repaired": 0,
+             "segments": 0, "cuts": 0, "fallbacks": 0}
     expected_frames = int(message.get("frames") or len(trajectory))
     if expected_frames != len(trajectory):
         return {**empty, "missing": True}
@@ -535,8 +601,12 @@ def _tick(frame):
                 stationary = len(result.get("stationary", []))
                 errors = len(result.get("errors", {}))
                 repaired = int(result.get("repaired") or 0)
-                suffix = (f"{built} path(s) ready from every frame, {stationary} stationary, "
-                          f"{errors} error(s), {repaired} unusual value(s) repaired")
+                segments = int(result.get("segments") or 0)
+                cuts = int(result.get("cuts") or 0)
+                fallbacks = int(result.get("fallbacks") or 0)
+                suffix = (f"{built} joint path(s), {segments} segment(s), {cuts} gap cut(s), "
+                          f"{stationary} stationary, {errors} error(s), {fallbacks} linear fallback(s), "
+                          f"{repaired} unusual value(s) repaired")
         else:
             suffix = "enable a Path checkbox to build a full episode path"
         _set_status(f"{len(names)} joints loaded - {suffix}")

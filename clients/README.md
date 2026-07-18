@@ -118,13 +118,17 @@ an optional scale magnitude. Changes are saved automatically in Maya preferences
 and restored the next time the window loads. Blank rows are ignored.
 
 Enable **Path** on any joint row to visualize that mapped Maya node's world-space
-motion as a thick red cubic spline. The synchronized publisher sends the complete
+motion as a thick cubic spline. Each joint receives a stable, high-contrast color,
+and all segments belonging to that joint keep the same color. The synchronized publisher sends the complete
 filtered episode range when Maya connects, so path creation does not depend on
 playback. Changing the smoother rebuilds the full paths automatically. The path
 builder rejects non-finite samples and isolated discontinuity spikes before fitting
 the spline. Maya waits until the complete trajectory payload is present, repairs
 non-finite or isolated extreme joint values for visualization only, and evaluates
-every episode frame exactly once. The original dataset remains unchanged. The
+every episode frame exactly once. If adjacent world-space samples are unusually
+far apart, Maya cuts the path there instead of drawing a misleading connector.
+Each continuous section becomes its own curve; if Maya rejects a cubic section,
+that section falls back to a linear curve and the status reports it. The original dataset remains unchanged. The
 generated curves are parented under
 `blacknodeDatasetDebugPaths`; **Clear debug paths** deletes them. Editing a joint
 mapping evaluates the cached full trajectory again for the new rig target.

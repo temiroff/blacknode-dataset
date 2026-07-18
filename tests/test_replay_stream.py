@@ -203,17 +203,20 @@ def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     assert "changeCommand=lambda enabled" not in source
     assert "cmds.xform(node, query=True, worldSpace=True, translation=True)" in source
     assert "cmds.curve" in source
-    assert "editPoint=points" in source
-    assert '("overrideColorRGB", (1.0, 0.0, 0.0))' in source
+    assert "editPoint=segment" in source
+    assert "degree=1, point=segment" in source
+    assert '("overrideColorRGB", color)' in source
+    assert "_PATH_COLORS" in source
     assert '("lineWidth", (4.0,))' in source
     assert "_reject_discontinuity_outliers" in source
+    assert "_split_path_segments" in source
     assert "_build_full_trajectory_paths" in source
     assert "_sanitize_path_trajectory" in source
     assert "for frame_index, positions in enumerate(trajectory)" in source
     assert 'expected_frames != len(trajectory)' in source
     assert "reload and restart StreamPublisher" in source
     assert "_on_path_changed" in source
-    assert "full episode path ready" in source
+    assert "path ready:" in source
     assert "path has no world-space movement" in source
     assert "_drain_pending" in source
     assert '"latest_frame"' in source
@@ -244,6 +247,21 @@ def test_maya_path_filter_drops_isolated_spike_but_keeps_sustained_motion():
                              (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)]
     sustained = [(0, 0, 0), (1, 0, 0), (100, 0, 0), (101, 0, 0), (102, 0, 0)]
     assert reject(sustained) == [tuple(float(value) for value in point) for point in sustained]
+
+
+def test_maya_path_segments_cut_large_world_space_gaps():
+    source = (_CLIENTS / "maya_stream.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {"_distance", "_median", "_split_path_segments"}
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    namespace = {"math": math}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "maya_path_segments", "exec"), namespace)
+
+    points = [(0, 0, 0), (1, 0, 0), (2, 0, 0), (100, 0, 0), (101, 0, 0), (102, 0, 0)]
+    segments, cuts, threshold = namespace["_split_path_segments"](points)
+    assert segments == [points[:3], points[3:]]
+    assert cuts == 1
+    assert threshold < 98.0
 
 
 def test_maya_path_sanitizer_repairs_bad_values_without_dropping_frames():
