@@ -58,6 +58,13 @@ Each WebSocket message is one JSON object per frame:
 }
 ```
 
+Policy evaluation uses `kind: "blacknode.policy-replay-frame"` with the same
+required playback fields. It additionally includes `target_action`,
+`absolute_error`, `action_chunk`, `policy_step`, and
+`motion_commanded: false`. Existing visualization clients continue to use
+`joint_names`, `positions`, and `units`; evaluation-aware clients can consume
+the additional fields to graph error or compare predictions with demonstrations.
+
 `positions` is `joint_names` resolved against the selected `source`, so most
 clients only need those two arrays plus `units`.
 

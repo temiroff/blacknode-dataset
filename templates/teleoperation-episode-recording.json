@@ -786,11 +786,22 @@
         ]
       }
     },
+    "dataset_validate": {
+      "id": "dataset_validate",
+      "type": "EpisodeDatasetValidate",
+      "pos": [2860, 600],
+      "params": {},
+      "inputs": ["trigger", "dataset"],
+      "outputs": ["ok", "validation", "report"],
+      "input_types": {"trigger": "Any", "dataset": "Dict"},
+      "output_types": {"ok": "Bool", "validation": "Dict", "report": "Text"},
+      "input_defaults": {"dataset": {}}
+    },
     "hdf5_export": {
       "id": "hdf5_export",
       "type": "HDF5EpisodeExport",
       "pos": [
-        2860,
+        3260,
         700
       ],
       "params": {
@@ -952,8 +963,20 @@
     {
       "from": "recorder",
       "from_port": "dataset",
+      "to": "dataset_validate",
+      "to_port": "dataset"
+    },
+    {
+      "from": "recorder",
+      "from_port": "dataset",
       "to": "hdf5_export",
       "to_port": "dataset"
+    },
+    {
+      "from": "dataset_validate",
+      "from_port": "report",
+      "to": "hdf5_export",
+      "to_port": "trigger"
     },
     {
       "from": "follow",
