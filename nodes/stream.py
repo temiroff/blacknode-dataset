@@ -1,9 +1,10 @@
 """Broadcast a stream to external apps over a plain WebSocket.
 
 ``StreamPublisher`` is the transport-neutral producer. Connect any stream handle
-into its ``stream`` input — a recorded replay from a DatasetBrowser or
-TrajectorySmoother, or a live ``blacknode.sample-stream`` — and it broadcasts each
-frame as JSON to every connected subscriber. It is strictly read-only: it never
+into its ``stream`` input — a recorded replay from a DatasetBrowser, a derived
+trajectory such as a smoothed or policy-predicted replay, or a live
+``blacknode.sample-stream`` — and it broadcasts each frame as JSON to every
+connected subscriber. It is strictly read-only: it never
 opens a robot connection or commands motion. Receiving apps (ROS 2, Maya, Isaac
 Sim, ...) run a small subscriber that maps the joint values into their own rig /
 topic / prim; example clients ship under ``clients/``.
@@ -20,7 +21,7 @@ _CATEGORY = "Dataset"
 
 @node(name="StreamPublisher", live=True, category=_CATEGORY,
       description="Broadcast a stream frame-by-frame to any app over a plain WebSocket. Connect a 'stream' handle "
-                  "(from DatasetBrowser or TrajectorySmoother, or a live sample-stream), set action=start, and "
+                  "(from DatasetBrowser, TrajectorySmoother, policy replay, or a live sample-stream), set action=start, and "
                   "connect subscribers to stream_url. Recorded replay follows Dataset Browser play and seek by "
                   "default. Read-only: it never commands hardware.",
       inputs={"trigger": AnyPort,

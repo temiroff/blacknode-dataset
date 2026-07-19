@@ -821,18 +821,21 @@ def make_replay_stream(token: str, label: str = "", frames: int = 0, fps: float 
 def parse_stream(stream: Any) -> tuple[str, str, str]:
     """Return (mode, token, url) for a stream handle, or raise if unrecognized.
 
-    Accepts a ``blacknode.replay-stream`` handle (recorded episode, replayed by
-    walking frames) or a ``blacknode.sample-stream`` handle (a live source polled
-    for its latest sample), so the publisher can stream anything, not just replay.
+    Accepts a ``blacknode.replay-stream`` handle backed by a registered episode
+    token or inline replay frames, plus a ``blacknode.sample-stream`` handle for
+    a live source. Inline frames let policy evaluators use the same publisher and
+    subscriber wire contract as recorded datasets.
     """
     handle = dict(stream) if isinstance(stream, dict) else {}
     kind = str(handle.get("kind") or "")
+    if kind == "blacknode.replay-stream" and isinstance(handle.get("frames_data"), list):
+        return "inline", "", ""
     if kind == "blacknode.replay-stream" or (not kind and handle.get("token")):
         return "replay", str(handle.get("token") or ""), ""
     if kind == "blacknode.sample-stream" or (not kind and handle.get("url")):
         return "sample", "", str(handle.get("url") or "")
-    raise ValueError("connect a stream handle: a DatasetBrowser/TrajectorySmoother 'stream' "
-                     "output, or a live 'blacknode.sample-stream'")
+    raise ValueError("connect a stream handle: a DatasetBrowser, TrajectorySmoother, or policy replay "
+                     "'stream' output, or a live 'blacknode.sample-stream'")
 
 
 @dataclass
@@ -848,6 +851,7 @@ class StreamPublisher:
     run_id: str
     mode: str
     token: str
+    source_token: str
     url: str
     host: str
     port: int
@@ -860,6 +864,7 @@ class StreamPublisher:
     server: wsserver.WsBroadcastServer
     frames: int
     joint_names: list[str]
+    inline_frames: list[dict[str, Any]] = field(default_factory=list)
     stop_event: threading.Event = field(default_factory=threading.Event)
     lock: threading.RLock = field(default_factory=threading.RLock)
     thread: threading.Thread | None = None
@@ -876,6 +881,16 @@ class StreamPublisher:
                                        name=f"blacknode-stream-{self.run_id}")
         self.thread.start()
 
+    def _frame(self, index: int) -> dict[str, Any] | None:
+        if self.mode == "inline":
+            with self.lock:
+                frames = self.inline_frames
+                if not frames:
+                    return None
+                resolved = min(max(0, int(index)), len(frames) - 1)
+                return dict(frames[resolved])
+        return replay_frame(self.token, index)
+
     def _trajectory_payload(self, kind: str = "blacknode.stream-schema") -> dict[str, Any]:
         """Build the complete replay trajectory for subscribers that render full paths."""
         with self.lock:
@@ -888,7 +903,7 @@ class StreamPublisher:
         trajectory: list[list[float]] = []
         smoothing: dict[str, Any] = {}
         for index in range(frame_count):
-            frame = replay_frame(token, index)
+            frame = self._frame(index)
             if frame is None:
                 break
             joints = dict(frame.get(source) or {})
@@ -959,7 +974,7 @@ class StreamPublisher:
 
     def _loop(self) -> None:
         try:
-            if self.mode == "replay" and self.sync_to_browser:
+            if self.mode in {"replay", "inline"} and self.sync_to_browser:
                 while not self.stop_event.wait(0.2):
                     pass
                 return
@@ -967,11 +982,11 @@ class StreamPublisher:
             deadline = time.monotonic()
             index = 0
             while not self.stop_event.is_set():
-                if self.mode == "replay":
+                if self.mode in {"replay", "inline"}:
                     if self.frames <= 0:
                         self.stop_event.wait(0.2)
                         continue
-                    frame = replay_frame(self.token, index)
+                    frame = self._frame(index)
                     if frame is None:
                         with self.lock:
                             self.last_error = "replay selection expired; refresh the Dataset Browser"
@@ -1006,6 +1021,7 @@ class StreamPublisher:
             return {
                 "run_id": self.run_id,
                 "mode": self.mode,
+                "source_token": self.source_token,
                 "running": alive,
                 "streaming": alive,
                 "stream_url": f"ws://{self.host}:{self.port}",
@@ -1099,7 +1115,8 @@ def start_stream(*, run_id: str, stream: Any, host: str, port: int, fps: float,
     source = str(source or "action").strip().lower()
     if source not in {"action", "observation", "leader"}:
         raise ValueError("source must be action, observation, or leader")
-    mode, token, url = parse_stream(stream)
+    handle = dict(stream) if isinstance(stream, dict) else {}
+    mode, token, url = parse_stream(handle)
     with _lock:
         existing = _publishers.get(run_id)
         if existing and existing.thread and existing.thread.is_alive():
@@ -1107,6 +1124,8 @@ def start_stream(*, run_id: str, stream: Any, host: str, port: int, fps: float,
     resolved_fps = float(fps or 0) or 30.0
     resolved_units = str(units or "radians")
     frames, joint_names = 0, []
+    inline_frames: list[dict[str, Any]] = []
+    source_token = str(handle.get("source_token") or "")
     if mode == "replay":
         with _lock:
             session = dict(_replay_sessions.get(token) or {})
@@ -1116,15 +1135,26 @@ def start_stream(*, run_id: str, stream: Any, host: str, port: int, fps: float,
         joint_names = list(session.get("joint_names") or [])
         resolved_fps = float(fps or 0) or float(session.get("fps") or 0) or 30.0
         resolved_units = str(units or session.get("units") or "radians")
+    elif mode == "inline":
+        inline_frames = [dict(frame) for frame in list(handle.get("frames_data") or []) if isinstance(frame, dict)]
+        if not inline_frames:
+            raise ValueError("inline replay stream has no frames")
+        frames = len(inline_frames)
+        joint_names = list(handle.get("joint_names") or inline_frames[0].get("joint_names") or [])
+        if not joint_names:
+            raise ValueError("inline replay stream has no joint_names")
+        resolved_fps = float(fps or 0) or float(handle.get("fps") or 0) or 30.0
+        resolved_units = str(units or handle.get("units") or "radians")
+    resolved_sync = bool(sync_to_browser) and (mode == "replay" or bool(source_token))
     server = wsserver.WsBroadcastServer(host, int(port))
     publisher = StreamPublisher(
-        run_id=run_id, mode=mode, token=token, url=url,
+        run_id=run_id, mode=mode, token=token, source_token=source_token, url=url,
         host=str(host or "127.0.0.1"), port=int(port),
         fps=resolved_fps, rate=max(0.01, float(rate or 1.0)), loop=bool(loop), source=source,
-        units=resolved_units, sync_to_browser=bool(sync_to_browser), server=server,
-        frames=frames, joint_names=joint_names,
+        units=resolved_units, sync_to_browser=resolved_sync, server=server,
+        frames=frames, joint_names=joint_names, inline_frames=inline_frames,
     )
-    if mode == "replay":
+    if mode in {"replay", "inline"}:
         server.initial_text = json.dumps(publisher._trajectory_payload("blacknode.stream-schema"))
     try:
         publisher.start()
@@ -1156,12 +1186,13 @@ def publish_replay_event(token: str, frame_index: int, event: str) -> dict[str, 
     matched = 0
     delivered = 0
     for publisher in publishers:
-        if publisher.mode != "replay" or not publisher.sync_to_browser:
+        if publisher.mode not in {"replay", "inline"} or not publisher.sync_to_browser:
             continue
         session = sessions.get(publisher.token) or {}
-        if publisher.token != token and str(session.get("source_token") or "") != token:
+        if (publisher.token != token and publisher.source_token != token
+                and str(session.get("source_token") or "") != token):
             continue
-        frame = replay_frame(publisher.token, index)
+        frame = publisher._frame(index)
         if frame is None:
             continue
         matched += 1

@@ -123,8 +123,8 @@ so the same source can drive ROS 2, Maya, Isaac Sim, or anything else at once. I
 is transport-neutral and **read-only**: it never opens a robot connection or
 commands motion. What a subscriber does with the values is the subscriber's
 responsibility. Its `stream` input accepts a `stream` handle from any producer —
-a recorded replay (`DatasetBrowser`/`TrajectorySmoother`) or a live
-`blacknode.sample-stream` — so it streams anything, not just replay.
+a recorded replay (`DatasetBrowser`/`TrajectorySmoother`), a derived inline
+replay such as `ACTPolicyReplay`, or a live `blacknode.sample-stream`.
 
 1. Load `templates/replay-stream.json`, or wire `DatasetBrowser.stream`
    into a `StreamPublisher`.
@@ -137,6 +137,12 @@ a recorded replay (`DatasetBrowser`/`TrajectorySmoother`) or a live
    playback frame and timeline scrub pose is published. Each broadcast carries `joint_names`,
    an ordered `positions` array, `units`, timestamps, and the full per-joint
    dictionaries.
+
+Policy replay uses the same path. Connect `DatasetBrowser.stream` to the policy
+replay node's synchronization input and connect its resulting `stream` to
+`StreamPublisher`. The original video remains the review timeline while each
+outbound frame carries the policy prediction, recorded target, and prediction
+error for app-side visualization and evaluation.
 
 Set `sync_to_browser=false` for an explicit independent replay; in that mode,
 `rate` scales its playback speed and `loop` repeats the episode.

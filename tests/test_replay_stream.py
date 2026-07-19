@@ -192,6 +192,47 @@ def test_browser_synchronized_publisher_waits_then_emits_play_and_seek(stubbed):
         rt.control_stream("browser", "stop")
 
 
+def test_policy_inline_replay_uses_dataset_timeline_and_wire_schema(stubbed):
+    frames = []
+    for index in range(5):
+        frames.append({
+            "kind": "blacknode.policy-replay-frame", "schema_version": 1,
+            "frame_index": index, "frames": 5, "timestamp": index / 60.0,
+            "joint_names": ["a", "b"],
+            "action": {"a": 10.0 + index, "b": 20.0 + index},
+            "observation": {"a": float(index), "b": float(index)},
+            "leader": {"a": 0.0, "b": 0.0},
+            "target_action": {"a": float(index), "b": float(index) * 2},
+        })
+    handle = {
+        "kind": "blacknode.replay-stream", "frames_data": frames,
+        "frames": 5, "fps": 60, "units": "radians", "joint_names": ["a", "b"],
+        "source_token": "tok", "policy_artifact": "synthetic-policy",
+    }
+    status = rt.start_stream(
+        run_id="policy", stream=handle, host="127.0.0.1", port=0,
+        fps=0, rate=1.0, loop=False, source="action", units="radians",
+    )
+    assert status["mode"] == "inline"
+    assert status["sync_to_browser"] is True
+    assert status["source_token"] == "tok"
+    stream = blacknode_ws.connect(status["stream_url"], timeout=5.0)
+    try:
+        schema = stream.recv_json()
+        assert schema["kind"] == "blacknode.stream-schema"
+        assert schema["trajectory"][3] == [13.0, 23.0]
+        emitted = rt.publish_replay_event("tok", 3, "seek")
+        assert emitted["publishers"] == 1
+        frame = stream.recv_json()
+        assert frame["kind"] == "blacknode.policy-replay-frame"
+        assert frame["positions"] == [13.0, 23.0]
+        assert frame["target_action"] == {"a": 3.0, "b": 6.0}
+        assert frame["playback_event"] == "seek"
+    finally:
+        stream.close()
+        rt.control_stream("policy", "stop")
+
+
 def test_maya_window_persists_axis_direction_mapping_and_gets_schema():
     source = (_CLIENTS / "maya_stream.py").read_text(encoding="utf-8")
     assert "Get joints / Connect" in source
