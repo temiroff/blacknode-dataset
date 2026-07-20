@@ -14,7 +14,7 @@
     "required_packages": [
       "blacknode-robot",
       "blacknode-ros2",
-      "blacknode-vision",
+      "blacknode-perception",
       "blacknode-dataset"
     ]
   },
