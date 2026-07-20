@@ -1,0 +1,75 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "Hugging Face Publish",
+  "saved_at": "2026-07-19T00:00:00",
+  "entrypoint": {"node_id": "blacknode_export", "port": "report"},
+  "metadata": {
+    "template": true,
+    "description": "Browse and validate a recorded episode dataset, prepare the Blacknode Hub-native preview profile, then explicitly publish it to a Hugging Face dataset repository.",
+    "color": "#8b5cf6",
+    "required_packages": ["blacknode-dataset"]
+  },
+  "node_meta": {
+    "dataset_browser": {
+      "id": "dataset_browser",
+      "type": "DatasetBrowser",
+      "pos": [80, 180],
+      "params": {"dataset": {}, "root": "", "dataset_id": "", "episode_index": 0, "camera": "", "refresh_key": 0},
+      "inputs": ["trigger", "dataset", "root", "dataset_id", "episode_index", "camera", "refresh_key"],
+      "outputs": ["dataset", "catalog", "episode", "video", "replay_token", "stream", "episode_path", "video_path", "data_path", "report"],
+      "input_types": {"trigger": "Any", "dataset": "Dict", "root": "Text", "dataset_id": "Text", "episode_index": "Int", "camera": "Text", "refresh_key": "Int"},
+      "output_types": {"dataset": "Dict", "catalog": "Dict", "episode": "Dict", "video": "Video", "replay_token": "Text", "stream": "Dict", "episode_path": "Text", "video_path": "Text", "data_path": "Text", "report": "Text"},
+      "input_defaults": {"dataset": {}, "root": "", "dataset_id": "", "episode_index": 0, "camera": "", "refresh_key": 0},
+      "promoted_inputs": ["root", "dataset_id", "episode_index", "camera"],
+      "promoted_outputs": ["dataset", "video", "report"]
+    },
+    "dataset_validate": {
+      "id": "dataset_validate",
+      "type": "EpisodeDatasetValidate",
+      "pos": [460, 180],
+      "params": {"dataset": {}},
+      "inputs": ["trigger", "dataset"],
+      "outputs": ["ok", "validation", "report"],
+      "input_types": {"trigger": "Any", "dataset": "Dict"},
+      "output_types": {"ok": "Bool", "validation": "Dict", "report": "Text"},
+      "input_defaults": {"dataset": {}},
+      "promoted_inputs": ["dataset"],
+      "promoted_outputs": ["ok", "report"]
+    },
+    "blacknode_export": {
+      "id": "blacknode_export",
+      "type": "BlacknodeHubExport",
+      "pos": [840, 140],
+      "params": {"action": "export", "dataset": {}, "output_path": "", "repo_id": "", "include_videos": true, "license": "", "overwrite": false},
+      "inputs": ["trigger", "action", "dataset", "output_path", "repo_id", "include_videos", "license", "overwrite"],
+      "outputs": ["ok", "exported", "status", "export", "path", "report"],
+      "input_types": {"trigger": "Any", "action": "Text", "dataset": "Dict", "output_path": "Text", "repo_id": "Text", "include_videos": "Bool", "license": "Text", "overwrite": "Bool"},
+      "output_types": {"ok": "Bool", "exported": "Bool", "status": "Text", "export": "Dict", "path": "Text", "report": "Text"},
+      "input_defaults": {"action": "export", "dataset": {}, "output_path": "", "repo_id": "", "include_videos": true, "license": "", "overwrite": false},
+      "input_choices": {"action": ["export", "check"]},
+      "promoted_inputs": ["action", "dataset", "output_path", "repo_id", "overwrite"],
+      "promoted_outputs": ["exported", "status", "path", "report"]
+    },
+    "hub_upload": {
+      "id": "hub_upload",
+      "type": "HuggingFaceDatasetUpload",
+      "pos": [1240, 140],
+      "params": {"action": "check", "export_path": "", "repo_id": "", "private": false, "token": ""},
+      "inputs": ["trigger", "action", "export_path", "repo_id", "private", "token"],
+      "outputs": ["ok", "uploaded", "status", "format", "repo_id", "url", "report"],
+      "input_types": {"trigger": "Any", "action": "Text", "export_path": "Text", "repo_id": "Text", "private": "Bool", "token": "Text"},
+      "output_types": {"ok": "Bool", "uploaded": "Bool", "status": "Text", "format": "Text", "repo_id": "Text", "url": "Text", "report": "Text"},
+      "input_defaults": {"action": "check", "export_path": "", "repo_id": "", "private": false, "token": ""},
+      "input_choices": {"action": ["check", "upload"]},
+      "promoted_inputs": ["action", "export_path", "repo_id", "private"],
+      "promoted_outputs": ["uploaded", "status", "format", "url", "report"]
+    }
+  },
+  "edges": [
+    {"from": "dataset_browser", "from_port": "dataset", "to": "dataset_validate", "to_port": "dataset"},
+    {"from": "dataset_browser", "from_port": "dataset", "to": "blacknode_export", "to_port": "dataset"},
+    {"from": "dataset_validate", "from_port": "report", "to": "blacknode_export", "to_port": "trigger"},
+    {"from": "blacknode_export", "from_port": "path", "to": "hub_upload", "to_port": "export_path"}
+  ]
+}

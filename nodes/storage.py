@@ -9,6 +9,7 @@ import statistics
 import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +99,33 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     temp.replace(path)
 
 
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _promote_export(temp_output: Path, output: Path, *, overwrite: bool) -> None:
+    """Promote a complete temporary export while preserving the old one on failure."""
+    if not output.exists():
+        temp_output.replace(output)
+        return
+    if not overwrite:
+        raise FileExistsError(f"export path already exists: {output}")
+    backup = output.with_name(f".{output.name}.backup")
+    if backup.exists():
+        raise FileExistsError(f"cannot overwrite while backup path exists: {backup}")
+    output.replace(backup)
+    try:
+        temp_output.replace(output)
+    except Exception:
+        if not output.exists() and backup.exists():
+            backup.replace(output)
+        raise
+    _remove_path(backup)
+
+
 def load_manifest(path: Path) -> dict[str, Any]:
     manifest_path = path / "dataset.json"
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -169,6 +197,7 @@ def begin_episode(path: Path, run_id: str) -> tuple[Path, int, dict[str, Any]]:
     episode = {
         "kind": "blacknode.episode-journal",
         "schema_version": 1,
+        "episode_id": f"episode-{uuid.uuid4().hex}",
         "run_id": run_id,
         "episode_index": episode_index,
         "task": str(manifest.get("task") or ""),
@@ -351,7 +380,8 @@ def save_episode(path: Path, run_id: str) -> dict[str, Any]:
     if not frames:
         raise ValueError("cannot save an episode with zero frames")
     manifest = load_manifest(path)
-    episode_index = int(json.loads((work / "episode.json").read_text(encoding="utf-8"))["episode_index"])
+    journal = json.loads((work / "episode.json").read_text(encoding="utf-8"))
+    episode_index = int(journal["episode_index"])
     if episode_index != len(manifest.get("episodes") or []):
         raise ValueError("episode index changed while recording; save episodes sequentially")
     joint_names = [str(name) for name in frames[0]["robot"].get("joint_names") or []]
@@ -384,10 +414,15 @@ def save_episode(path: Path, run_id: str) -> dict[str, Any]:
                     if key in captured:
                         camera_info[camera_dir.name][key] = captured[key]
     duration = len(frames) / float(manifest["fps"])
+    completed_at = _now()
     episode_info = {
         "kind": "blacknode.episode",
         "schema_version": 1,
+        "episode_id": str(journal.get("episode_id") or f"episode-{uuid.uuid4().hex}"),
+        "run_id": str(journal.get("run_id") or run_id),
         "episode_index": episode_index,
+        "started_at": journal.get("started_at"),
+        "completed_at": completed_at,
         "task": str(manifest.get("task") or ""),
         "fps": int(manifest["fps"]),
         "frames": len(frames),
@@ -399,7 +434,7 @@ def save_episode(path: Path, run_id: str) -> dict[str, Any]:
             for key in ("leader_hardware_id", "follower_hardware_id", "leader_calibration_path", "follower_calibration_path")
         },
         "cameras": camera_info,
-        "saved_at": _now(),
+        "saved_at": completed_at,
     }
     _atomic_json(temp / "episode.json", episode_info)
     temp.replace(final)
@@ -410,6 +445,7 @@ def save_episode(path: Path, run_id: str) -> dict[str, Any]:
         "cameras": camera_info,
     }
     manifest.setdefault("episodes", []).append({
+        "episode_id": episode_info["episode_id"],
         "episode_index": episode_index,
         "path": str(final.relative_to(path)).replace("\\", "/"),
         "frames": len(frames),
@@ -844,6 +880,227 @@ def export_lerobot_v3(path: Path, output: Path, repo_id: str = "",
             "repo_id": repo_id, "smoothing": str(smoothing or "none").lower()}
 
 
+def export_blacknode_hub(
+    path: Path,
+    output: Path,
+    repo_id: str = "",
+    *,
+    include_videos: bool = True,
+    license_id: str = "",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Export a Blacknode-native, Hugging Face Dataset Viewer-ready tree."""
+    _require_storage_dependencies()
+    report = validate(path)
+    if not report["ok"]:
+        raise ValueError("dataset validation failed: " + "; ".join(report["errors"]))
+    manifest = load_manifest(path)
+    episodes = list(manifest.get("episodes") or [])
+    if not episodes:
+        raise ValueError("dataset has no saved episodes")
+    if output.exists() and not overwrite:
+        raise FileExistsError(f"export path already exists: {output}")
+
+    temp_output = output.with_name(f".{output.name}.tmp")
+    if temp_output.exists():
+        shutil.rmtree(temp_output)
+    temp_output.mkdir(parents=True)
+    dataset_id = str(manifest["dataset_id"])
+    robot_type = str(manifest.get("robot_type") or "")
+    fps = int(manifest["fps"])
+    camera_features = dict((manifest.get("features") or {}).get("cameras") or {})
+    episode_rows: list[dict[str, Any]] = []
+    media_rows: list[dict[str, Any]] = []
+    hub_episodes: list[dict[str, Any]] = []
+    total_frames = 0
+    try:
+        for episode in episodes:
+            episode_index = int(episode["episode_index"])
+            source = path / str(episode["path"])
+            episode_info = json.loads((source / "episode.json").read_text(encoding="utf-8"))
+            episode_id = str(
+                episode_info.get("episode_id")
+                or episode.get("episode_id")
+                or f"{dataset_id}-episode-{episode_index:06d}"
+            )
+            table = pq.read_table(source / "data.parquet")
+            frame_count = table.num_rows
+            if "dataset_id" not in table.column_names:
+                table = table.append_column("dataset_id", pa.array([dataset_id] * frame_count, type=pa.string()))
+            if "episode_id" not in table.column_names:
+                table = table.append_column("episode_id", pa.array([episode_id] * frame_count, type=pa.string()))
+            data_target = temp_output / "data" / f"train-{episode_index:06d}.parquet"
+            data_target.parent.mkdir(parents=True, exist_ok=True)
+            pq.write_table(
+                table,
+                data_target,
+                compression="snappy",
+                row_group_size=min(max(frame_count, 1), 1024),
+                write_page_index=True,
+            )
+
+            video_paths: dict[str, str] = {}
+            if include_videos:
+                for camera in sorted(camera_features):
+                    source_video = source / "cameras" / f"{camera}.mp4"
+                    target_video = temp_output / "media" / "videos" / camera / f"episode-{episode_index:06d}.mp4"
+                    target_video.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_video, target_video)
+                    relative_video = target_video.relative_to(temp_output / "media").as_posix()
+                    video_paths[camera] = f"media/{relative_video}"
+                    media_rows.append({
+                        "video_file": relative_video,
+                        "dataset_id": dataset_id,
+                        "episode_id": episode_id,
+                        "episode_index": episode_index,
+                        "camera": camera,
+                        "task": str(episode_info.get("task") or manifest.get("task") or ""),
+                        "frames": frame_count,
+                        "fps": fps,
+                        "duration_seconds": float(episode_info.get("duration_seconds") or frame_count / fps),
+                    })
+
+            episode_row: dict[str, Any] = {
+                "dataset_id": dataset_id,
+                "episode_id": episode_id,
+                "episode_index": episode_index,
+                "task": str(episode_info.get("task") or manifest.get("task") or ""),
+                "frames": frame_count,
+                "fps": fps,
+                "duration_seconds": float(episode_info.get("duration_seconds") or frame_count / fps),
+                "robot_type": robot_type,
+                "units": str(episode_info.get("units") or (manifest.get("features") or {}).get("units") or ""),
+                "started_at": str(episode_info.get("started_at") or ""),
+                "completed_at": str(episode_info.get("completed_at") or episode_info.get("saved_at") or episode.get("saved_at") or ""),
+            }
+            for camera in sorted(camera_features):
+                episode_row[f"{camera}_file_name"] = video_paths.get(camera, "")
+            episode_rows.append(episode_row)
+            hub_episodes.append({
+                **episode_row,
+                "data_file": data_target.relative_to(temp_output).as_posix(),
+                "videos": video_paths,
+            })
+            total_frames += frame_count
+
+        assert pa is not None and pq is not None
+        episode_columns = {key: [row.get(key) for row in episode_rows] for key in episode_rows[0]}
+        pq.write_table(
+            pa.table(episode_columns), temp_output / "episodes.parquet",
+            compression="snappy", row_group_size=256, write_page_index=True,
+        )
+        if media_rows:
+            media_columns = {
+                "video": pa.array(
+                    [{"bytes": None, "path": row["video_file"]} for row in media_rows],
+                    type=pa.struct([pa.field("bytes", pa.binary()), pa.field("path", pa.string())]),
+                ),
+                **{key: [row.get(key) for row in media_rows] for key in media_rows[0]},
+            }
+            media_table = pa.table(media_columns)
+            feature_metadata = {
+                "video": {"decode": True, "_type": "Video"},
+                "video_file": {"dtype": "string", "_type": "Value"},
+                "dataset_id": {"dtype": "string", "_type": "Value"},
+                "episode_id": {"dtype": "string", "_type": "Value"},
+                "episode_index": {"dtype": "int64", "_type": "Value"},
+                "camera": {"dtype": "string", "_type": "Value"},
+                "task": {"dtype": "string", "_type": "Value"},
+                "frames": {"dtype": "int64", "_type": "Value"},
+                "fps": {"dtype": "int64", "_type": "Value"},
+                "duration_seconds": {"dtype": "float64", "_type": "Value"},
+            }
+            schema_metadata = dict(media_table.schema.metadata or {})
+            schema_metadata[b"huggingface"] = json.dumps(
+                {"info": {"features": feature_metadata}}, separators=(",", ":")
+            ).encode("utf-8")
+            media_table = media_table.replace_schema_metadata(schema_metadata)
+            pq.write_table(
+                media_table, temp_output / "media" / "metadata.parquet",
+                compression="snappy", row_group_size=256, write_page_index=True,
+            )
+
+        config_lines = [
+            "configs:",
+            "- config_name: frames",
+            "  data_files:",
+            "  - split: train",
+            "    path: data/*.parquet",
+            "- config_name: episodes",
+            "  data_files:",
+            "  - split: train",
+            "    path: episodes.parquet",
+        ]
+        if media_rows:
+            config_lines.extend([
+                "- config_name: media",
+                "  data_files:",
+                "  - split: train",
+                "    path: media/metadata.parquet",
+            ])
+        license_lines = [f"license: {json.dumps(str(license_id).strip())}"] if str(license_id).strip() else []
+        title = repo_id or dataset_id
+        card = "\n".join([
+            "---",
+            f"pretty_name: {json.dumps(title)}",
+            *license_lines,
+            "tags:",
+            "- robotics",
+            "- timeseries",
+            "- video",
+            "- blacknode",
+            *config_lines,
+            "---",
+            "",
+            f"# {title}",
+            "",
+            "A Blacknode robot-experience dataset with synchronized observations, actions, timing, and camera media.",
+            "",
+            f"- Task: {manifest.get('task') or ''}",
+            f"- Robot: {robot_type or 'unspecified'}",
+            f"- Episodes: {len(episodes)}",
+            f"- Frames: {total_frames}",
+            f"- FPS: {fps}",
+            "",
+            "Use the `frames` configuration for policy data, `episodes` for episode summaries, and `media` for camera videos.",
+            "",
+        ])
+        (temp_output / "README.md").write_text(card, encoding="utf-8")
+        _atomic_json(temp_output / "blacknode" / "manifest.json", {
+            "kind": "blacknode.hub-dataset",
+            "schema_version": 1,
+            "dataset_id": dataset_id,
+            "task": str(manifest.get("task") or ""),
+            "robot_type": robot_type,
+            "fps": fps,
+            "features": dict(manifest.get("features") or {}),
+            "episodes": hub_episodes,
+        })
+        _atomic_json(temp_output / "blacknode-export.json", {
+            "kind": "blacknode.huggingface-export",
+            "schema_version": 1,
+            "dataset_id": dataset_id,
+            "repo_id": str(repo_id or ""),
+            "episodes": len(episodes),
+            "frames": total_frames,
+            "include_videos": bool(include_videos),
+            "exported_at": _now(),
+        })
+        _promote_export(temp_output, output, overwrite=overwrite)
+    except Exception:
+        shutil.rmtree(temp_output, ignore_errors=True)
+        raise
+    return {
+        "ok": True,
+        "path": str(output),
+        "episodes": len(episodes),
+        "frames": total_frames,
+        "media": len(media_rows),
+        "repo_id": str(repo_id or ""),
+        "format": "blacknode-hub",
+    }
+
+
 def _hdf5_column(table: Any, name: str, dtype: Any) -> Any | None:
     if name not in table.column_names:
         return None
@@ -900,6 +1157,7 @@ def export_hdf5(
     compression: str = "gzip",
     smoothing: str = "none",
     smoothing_strength: float = 1.0,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
     """Export one ACT-style HDF5 file per saved Blacknode episode."""
     _require_storage_dependencies()
@@ -915,7 +1173,7 @@ def export_hdf5(
     episodes = list(manifest.get("episodes") or [])
     if not episodes:
         raise ValueError("dataset has no saved episodes")
-    if output.exists():
+    if output.exists() and not overwrite:
         raise FileExistsError(f"export path already exists: {output}")
 
     temp_output = output.with_name(f".{output.name}.tmp")
@@ -1009,7 +1267,7 @@ def export_hdf5(
             "compression": compression,
             "exported_at": _now(),
         })
-        temp_output.replace(output)
+        _promote_export(temp_output, output, overwrite=overwrite)
     except Exception:
         shutil.rmtree(temp_output, ignore_errors=True)
         raise

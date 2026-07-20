@@ -1,12 +1,13 @@
 """Blacknode-native episode dataset nodes."""
 from __future__ import annotations
 
-import os
+import json
 from pathlib import Path
 from typing import Any
 
 from blacknode.node import Any as AnyPort
 from blacknode.node import Bool, Dict, Enum, Float, Image, Int, List, Text, Video, node
+from blacknode.providers.keys import api_key_for_provider
 
 from . import runtime, storage
 
@@ -248,16 +249,77 @@ def lerobot_v3_export(ctx: dict) -> dict:
         return {"ok": False, "export": {}, "path": "", "report": f"LeRobot export FAILED: {exc}"}
 
 
+@node(name="BlacknodeHubExport", category=_CATEGORY,
+      description="Export a Blacknode-native Hugging Face Hub dataset with previewable Parquet frames, episode metadata, videos, and a dataset card. Existing valid exports are reused unless overwrite is enabled.",
+      inputs={"trigger": AnyPort, "action": Enum(["export", "check"], default="export"),
+              "dataset": Dict(default={}), "output_path": Text(default=""), "repo_id": Text(default=""),
+              "include_videos": Bool(default=True), "license": Text(default=""), "overwrite": Bool(default=False)},
+      outputs={"ok": Bool, "exported": Bool, "status": Text, "export": Dict, "path": Text, "report": Text},
+      primary_inputs=["trigger", "action", "dataset", "output_path", "repo_id", "overwrite"],
+      primary_outputs=["exported", "status", "path", "report"])
+def blacknode_hub_export(ctx: dict) -> dict:
+    output: Path | None = None
+    try:
+        source = storage.resolve_dataset_path(dict(ctx.get("dataset") or {}))
+        raw_output = str(ctx.get("output_path") or "").strip()
+        output = Path(raw_output).expanduser().resolve() if raw_output else source.parent / f"{source.name}-blacknode-hub"
+        validation = storage.validate(source)
+        if not validation["ok"]:
+            raise ValueError("dataset validation failed: " + "; ".join(validation["errors"]))
+        episode_count = int(validation["summary"]["episode_count"])
+        if not episode_count:
+            raise ValueError("dataset has no saved episodes")
+        action = str(ctx.get("action") or "export").lower()
+        if action == "check":
+            return {
+                "ok": True, "exported": False, "status": "checked_not_exported", "export": {}, "path": str(output),
+                "report": (f"CHECK ONLY — no files written. {episode_count} episode(s) are ready for the Blacknode Hub format. "
+                           f"Change action=export; Blacknode will create: {output}"),
+            }
+        if action != "export":
+            raise ValueError(f"unsupported action: {action}; choose check or export")
+        overwrite = bool(ctx.get("overwrite", False))
+        if output.exists() and not overwrite:
+            existing = _existing_export(output, "blacknode.huggingface-export")
+            if existing is None:
+                raise FileExistsError(f"output path exists but is not a valid Blacknode Hub export: {output}")
+            return {
+                "ok": True, "exported": True, "status": "exists", "export": existing, "path": str(output),
+                "report": f"EXISTS — valid Blacknode Hub export left unchanged. Enable overwrite to rebuild: {output}",
+            }
+        result = storage.export_blacknode_hub(
+            source,
+            output,
+            str(ctx.get("repo_id") or "").strip(),
+            include_videos=bool(ctx.get("include_videos", True)),
+            license_id=str(ctx.get("license") or "").strip(),
+            overwrite=overwrite,
+        )
+        return {
+            "ok": True, "exported": True, "status": "exported", "export": result, "path": result["path"],
+            "report": (f"EXPORTED Blacknode Hub dataset: {result['episodes']} episode(s), {result['frames']} frame(s), "
+                       f"{result['media']} video(s). Destination: {result['path']}"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False, "exported": False, "status": "failed", "export": {},
+            "path": str(output) if output is not None else "",
+            "report": f"Blacknode Hub export FAILED: {type(exc).__name__}: {exc}",
+        }
+
+
 @node(name="HDF5EpisodeExport", category=_CATEGORY,
-      description="Check or export one ACT-style HDF5 file per saved episode, with robot state, actions, timing, and RGB cameras.",
-      inputs={"trigger": AnyPort, "action": Enum(["check", "export"], default="check"),
+      description="Export one ACT-style HDF5 file per saved episode and create the destination folder. Existing valid exports are reused unless overwrite is enabled.",
+      inputs={"trigger": AnyPort, "action": Enum(["export", "check"], default="export"),
               "dataset": Dict(default={}), "output_path": Text(default=""),
               "include_images": Bool(default=True),
               "compression": Enum(["gzip", "lzf", "none"], default="gzip"),
               "smoothing": Enum(["none", "spline", "gaussian", "savgol", "moving_average"], default="none"),
-              "smoothing_strength": Float(default=1.0)},
-      outputs={"ok": Bool, "exported": Bool, "export": Dict, "path": Text, "report": Text})
+              "smoothing_strength": Float(default=1.0), "overwrite": Bool(default=False)},
+      outputs={"ok": Bool, "exported": Bool, "status": Text, "export": Dict, "path": Text, "report": Text},
+      primary_inputs=["trigger", "action", "dataset", "output_path", "overwrite"], primary_outputs=["exported", "status", "path", "report"])
 def hdf5_episode_export(ctx: dict) -> dict:
+    output: Path | None = None
     try:
         source = storage.resolve_dataset_path(dict(ctx.get("dataset") or {}))
         raw_output = str(ctx.get("output_path") or "").strip()
@@ -267,9 +329,22 @@ def hdf5_episode_export(ctx: dict) -> dict:
             raise ValueError("dataset validation failed: " + "; ".join(validation["errors"]))
         if not validation["summary"]["episode_count"]:
             raise ValueError("dataset has no saved episodes")
-        if str(ctx.get("action") or "check").lower() == "check":
-            return {"ok": True, "exported": False, "export": {}, "path": str(output),
-                    "report": f"HDF5 export ready for {validation['summary']['episode_count']} episode(s); choose action=export"}
+        action = str(ctx.get("action") or "export").lower()
+        if action == "check":
+            return {"ok": True, "exported": False, "status": "checked_not_exported", "export": {}, "path": str(output),
+                    "report": (f"CHECK ONLY — no files written. {validation['summary']['episode_count']} episode(s) are ready. "
+                               f"Change action=export; Blacknode will create: {output}")}
+        if action != "export":
+            raise ValueError(f"unsupported action: {action}; choose check or export")
+        overwrite = bool(ctx.get("overwrite", False))
+        if output.exists() and not overwrite:
+            existing = _existing_export(output, "blacknode.hdf5-export")
+            if existing is None:
+                raise FileExistsError(f"output path exists but is not a valid HDF5 episode export: {output}")
+            return {
+                "ok": True, "exported": True, "status": "exists", "export": existing, "path": str(output),
+                "report": f"EXISTS — valid HDF5 export left unchanged. Enable overwrite to rebuild: {output}",
+            }
         result = storage.export_hdf5(
             source,
             output,
@@ -277,38 +352,87 @@ def hdf5_episode_export(ctx: dict) -> dict:
             compression=str(ctx.get("compression") or "gzip"),
             smoothing=str(ctx.get("smoothing") or "none"),
             smoothing_strength=float(ctx.get("smoothing_strength") or 1.0),
+            overwrite=overwrite,
         )
-        return {"ok": True, "exported": True, "export": result, "path": result["path"],
-                "report": f"HDF5 episode export ready: {result['path']}"}
+        return {"ok": True, "exported": True, "status": "exported", "export": result, "path": result["path"],
+                "report": (f"EXPORTED {result['episodes']} episode file(s), {result['frames']} frame(s). "
+                           f"Destination: {result['path']}")}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "exported": False, "export": {}, "path": "", "report": f"HDF5 export FAILED: {exc}"}
+        return {"ok": False, "exported": False, "status": "failed", "export": {},
+                "path": str(output) if output is not None else "", "report": f"HDF5 export FAILED: {type(exc).__name__}: {exc}"}
+
+
+def _existing_export(path: Path, kind: str) -> dict[str, Any] | None:
+    marker = path / "blacknode-export.json"
+    if not path.is_dir() or not marker.is_file():
+        return None
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    if str(payload.get("kind") or "") != kind:
+        return None
+    return {**payload, "path": str(path)}
+
+
+def _huggingface_export_format(path: Path) -> str:
+    if not path.is_dir() or not (path / "README.md").is_file():
+        return ""
+    marker = path / "blacknode-export.json"
+    if marker.is_file():
+        try:
+            kind = str(json.loads(marker.read_text(encoding="utf-8")).get("kind") or "")
+        except Exception:  # noqa: BLE001
+            return ""
+        if kind == "blacknode.huggingface-export" and (path / "blacknode" / "manifest.json").is_file() \
+                and any((path / "data").glob("*.parquet")):
+            return "blacknode-hub"
+        if kind == "blacknode.lerobot-export" and (path / "meta" / "info.json").is_file():
+            return "lerobot-v3"
+    if (path / "meta" / "info.json").is_file():
+        return "lerobot-v3"
+    return ""
 
 
 @node(name="HuggingFaceDatasetUpload", category=_CATEGORY,
-      description="Explicitly upload a prepared LeRobot export folder to a Hugging Face dataset repository.",
+      description="Check or explicitly upload a prepared Blacknode Hub or LeRobot v3 export to a Hugging Face dataset repository.",
       inputs={"trigger": AnyPort, "action": Enum(["check", "upload"], default="check"),
               "export_path": Text(default=""), "repo_id": Text(default=""), "private": Bool(default=False),
               "token": Text(default="")},
-      outputs={"ok": Bool, "uploaded": Bool, "repo_id": Text, "url": Text, "report": Text})
+      outputs={"ok": Bool, "uploaded": Bool, "status": Text, "format": Text,
+               "repo_id": Text, "url": Text, "report": Text},
+      primary_inputs=["trigger", "action", "export_path", "repo_id", "private"],
+      primary_outputs=["uploaded", "status", "format", "url", "report"])
 def huggingface_dataset_upload(ctx: dict) -> dict:
     action = str(ctx.get("action") or "check").lower()
     path = Path(str(ctx.get("export_path") or "")).expanduser().resolve()
     repo_id = str(ctx.get("repo_id") or "").strip()
-    if not path.is_dir() or not (path / "meta" / "info.json").exists():
-        return {"ok": False, "uploaded": False, "repo_id": repo_id, "url": "", "report": "a valid LeRobot export_path is required"}
+    export_format = _huggingface_export_format(path)
+    if not export_format:
+        return {"ok": False, "uploaded": False, "status": "failed", "format": "", "repo_id": repo_id, "url": "",
+                "report": "a valid Blacknode Hub or LeRobot v3 export_path is required"}
     if not repo_id:
-        return {"ok": False, "uploaded": False, "repo_id": "", "url": "", "report": "repo_id is required"}
+        return {"ok": False, "uploaded": False, "status": "failed", "format": export_format,
+                "repo_id": "", "url": "", "report": "repo_id is required"}
     if action == "check":
-        return {"ok": True, "uploaded": False, "repo_id": repo_id, "url": f"https://huggingface.co/datasets/{repo_id}",
-                "report": "upload inputs valid; choose action=upload to publish"}
+        return {"ok": True, "uploaded": False, "status": "checked_not_uploaded", "format": export_format,
+                "repo_id": repo_id, "url": f"https://huggingface.co/datasets/{repo_id}",
+                "report": f"CHECK ONLY — {export_format} upload inputs are valid; choose action=upload to publish"}
+    if action != "upload":
+        return {"ok": False, "uploaded": False, "status": "failed", "format": export_format,
+                "repo_id": repo_id, "url": "", "report": f"unsupported action: {action}; choose check or upload"}
     try:
         from huggingface_hub import HfApi
 
-        token = str(ctx.get("token") or "").strip() or os.getenv("HF_TOKEN") or None
+        token = api_key_for_provider(
+            "Hugging Face", "HF_TOKEN", str(ctx.get("token") or "").strip(),
+        ) or None
         api = HfApi(token=token)
         api.create_repo(repo_id=repo_id, repo_type="dataset", private=bool(ctx.get("private")), exist_ok=True)
         api.upload_folder(repo_id=repo_id, repo_type="dataset", folder_path=str(path))
         url = f"https://huggingface.co/datasets/{repo_id}"
-        return {"ok": True, "uploaded": True, "repo_id": repo_id, "url": url, "report": f"uploaded dataset to {url}"}
+        return {"ok": True, "uploaded": True, "status": "uploaded", "format": export_format,
+                "repo_id": repo_id, "url": url, "report": f"uploaded {export_format} dataset to {url}"}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "uploaded": False, "repo_id": repo_id, "url": "", "report": f"Hugging Face upload FAILED: {exc}"}
+        return {"ok": False, "uploaded": False, "status": "failed", "format": export_format,
+                "repo_id": repo_id, "url": "", "report": f"Hugging Face upload FAILED: {type(exc).__name__}: {exc}"}

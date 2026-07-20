@@ -21,14 +21,26 @@ except ImportError:
 
 import blacknode  # noqa: F401 - triggers package discovery
 from blacknode.node import _NODE_REGISTRY
+from blacknode.packages import _import_nodes_module, _tag_new_package_nodes
 from blacknode.pkg.blacknode_dataset import storage
 from blacknode.pkg.blacknode_dataset import runtime
 from blacknode.workflow import validate_workflow
 
+# teleoperation-episode-recording.json uses ROS2LeaderFollower, which lives in
+# blacknode-skills' disabled-by-default follow-person/ros2 adapter. Tagging
+# matches blacknode-skills' own test setup exactly so registration is correct
+# regardless of which test file's collection imports these modules first.
+_FOLLOW_PERSON_ROOT = Path(__file__).resolve().parents[2] / "blacknode-skills" / "components" / "follow-person"
+_FOLLOW_PERSON_ADAPTER_NODES = _FOLLOW_PERSON_ROOT / "adapters" / "ros2" / "nodes"
+_before_follow_person = dict(_NODE_REGISTRY)
+_import_nodes_module("blacknode.pkg.blacknode_skills.follow_person", _FOLLOW_PERSON_ROOT / "nodes")
+_import_nodes_module("blacknode.pkg.blacknode_skills.follow_person.adapters.ros2", _FOLLOW_PERSON_ADAPTER_NODES)
+_tag_new_package_nodes(_before_follow_person, "blacknode-skills", _FOLLOW_PERSON_ADAPTER_NODES, "follow-person", "ros2")
+
 
 EXPECTED = {
     "DatasetCameraStreamList", "DatasetCreate", "DatasetBrowser", "EpisodeRecorder", "EpisodeDatasetSummary", "EpisodeDatasetValidate",
-    "EpisodeReplay", "LeRobotV3Export", "HDF5EpisodeExport", "HuggingFaceDatasetUpload",
+    "EpisodeReplay", "LeRobotV3Export", "BlacknodeHubExport", "HDF5EpisodeExport", "HuggingFaceDatasetUpload",
 }
 
 
@@ -54,6 +66,9 @@ def test_nodes_registered():
         assert name in _NODE_REGISTRY
         assert _NODE_REGISTRY[name]._bn_package == "blacknode-dataset"
         assert _NODE_REGISTRY[name]._bn_category == "Dataset"
+    for name in ("HDF5EpisodeExport", "BlacknodeHubExport"):
+        assert _NODE_REGISTRY[name]._bn_input_defaults["action"] == "export"
+        assert _NODE_REGISTRY[name]._bn_input_choices["action"][0] == "export"
 
 
 def test_episode_recorder_dashboard_is_a_renderable_svg_image():
@@ -83,9 +98,11 @@ def test_episode_recorder_reports_exact_stale_robot_age(tmp_path: Path):
         recorder._validate_robot(sample, time.time_ns())
 
 
-def test_template_validates():
-    path = Path(__file__).resolve().parents[1] / "templates/teleoperation-episode-recording.json"
-    assert validate_workflow(json.loads(path.read_text(encoding="utf-8"))).ok
+def test_templates_validate():
+    templates = Path(__file__).resolve().parents[1] / "templates"
+    for path in templates.glob("*.json"):
+        result = validate_workflow(json.loads(path.read_text(encoding="utf-8")))
+        assert result.ok, f"{path.name}: {result.errors}"
 
 
 def test_camera_stream_list_is_chainable_and_deduplicates():
@@ -115,6 +132,12 @@ def test_native_save_validate_and_lerobot_v3_export(tmp_path: Path):
         }, {"wrist": _jpeg(index * 40)})
     saved = storage.save_episode(path, "run-one")
     assert saved["frames"] == 3
+    assert saved["episode_id"].startswith("episode-")
+    assert saved["run_id"] == "run-one"
+    assert saved["started_at"]
+    assert saved["completed_at"] == saved["saved_at"]
+    persisted_manifest = storage.load_manifest(path)
+    assert persisted_manifest["episodes"][0]["episode_id"] == saved["episode_id"]
     assert storage.validate(path)["ok"]
     replay = _NODE_REGISTRY["EpisodeReplay"]({"dataset": dataset, "episode_index": 0, "camera": "wrist"})
     assert replay["video"].startswith("/api/dataset/media/")
@@ -158,6 +181,28 @@ def test_native_save_validate_and_lerobot_v3_export(tmp_path: Path):
     assert tasks.loc["Pick the cube", "task_index"] == 0
     assert pq.read_table(output / "data/chunk-000/file-000.parquet").num_rows == 3
     assert (output / "videos/observation.images.wrist/chunk-000/file-000.mp4").exists()
+
+    hub_output = tmp_path / "blacknode-hub"
+    hub_exported = storage.export_blacknode_hub(
+        path, hub_output, "owner/pick-cube-blacknode", include_videos=True, license_id="apache-2.0",
+    )
+    assert hub_exported["format"] == "blacknode-hub"
+    assert hub_exported["frames"] == 3
+    hub_frames = pq.read_table(hub_output / "data/train-000000.parquet")
+    assert hub_frames.column("episode_id").to_pylist() == [saved["episode_id"]] * 3
+    assert hub_frames.column("dataset_id").to_pylist() == ["pick-cube"] * 3
+    hub_episodes = pq.read_table(hub_output / "episodes.parquet")
+    assert hub_episodes.column("wrist_file_name").to_pylist() == ["media/videos/wrist/episode-000000.mp4"]
+    assert (hub_output / "media/videos/wrist/episode-000000.mp4").is_file()
+    assert (hub_output / "media/metadata.parquet").is_file()
+    media_schema_metadata = pq.read_schema(hub_output / "media/metadata.parquet").metadata or {}
+    assert b'"_type":"Video"' in media_schema_metadata[b"huggingface"]
+    assert (hub_output / "blacknode/manifest.json").is_file()
+    hub_card = (hub_output / "README.md").read_text(encoding="utf-8")
+    assert "config_name: frames" in hub_card
+    assert "config_name: episodes" in hub_card
+    assert "config_name: media" in hub_card
+    assert "license: \"apache-2.0\"" in hub_card
 
     if h5py is not None:
         hdf5_output = tmp_path / "hdf5"
@@ -234,6 +279,87 @@ def test_hdf5_node_check_is_non_mutating(tmp_path: Path):
     result = _NODE_REGISTRY["HDF5EpisodeExport"]({"action": "check", "dataset": dataset})
     assert not result["ok"]
     assert not result["exported"]
+    assert result["status"] == "failed"
+
+
+def test_blacknode_hub_node_check_and_export(tmp_path: Path):
+    dataset = storage.create_dataset("hub-node", root=str(tmp_path), task="Hub", fps=10)
+    path = storage.resolve_dataset_path(dataset)
+    work, _, _ = storage.begin_episode(path, "hub-node-run")
+    storage.append_frame(work, {
+        "frame_index": 0, "timestamp": 0.0, "recorded_at_ns": 1,
+        "task": "Hub", "robot": _sample(0), "cameras": {},
+    }, {})
+    storage.save_episode(path, "hub-node-run")
+    output = tmp_path / "nested" / "hub-export"
+
+    checked = _NODE_REGISTRY["BlacknodeHubExport"]({
+        "action": "check", "dataset": dataset, "output_path": str(output), "repo_id": "owner/hub-node",
+    })
+    assert checked["ok"] and not checked["exported"]
+    assert checked["status"] == "checked_not_exported"
+    assert not output.exists()
+
+    exported = _NODE_REGISTRY["BlacknodeHubExport"]({
+        "dataset": dataset, "output_path": str(output),
+        "repo_id": "owner/hub-node", "include_videos": False,
+    })
+    assert exported["ok"] and exported["exported"]
+    assert exported["status"] == "exported"
+    assert (output / "data/train-000000.parquet").is_file()
+    assert (output / "episodes.parquet").is_file()
+    assert not (output / "media").exists()
+    existing = _NODE_REGISTRY["BlacknodeHubExport"]({
+        "dataset": dataset, "output_path": str(output), "include_videos": False,
+    })
+    assert existing["ok"] and existing["exported"]
+    assert existing["status"] == "exists"
+    assert "left unchanged" in existing["report"]
+    rebuilt = _NODE_REGISTRY["BlacknodeHubExport"]({
+        "dataset": dataset, "output_path": str(output), "include_videos": False, "overwrite": True,
+    })
+    assert rebuilt["ok"] and rebuilt["status"] == "exported"
+
+
+@pytest.mark.skipif(h5py is None, reason="h5py is installed by Blacknode package setup")
+def test_hdf5_node_export_creates_nested_destination_and_reports_written_files(tmp_path: Path):
+    dataset = storage.create_dataset("node-export", root=str(tmp_path), task="Export", fps=10)
+    path = storage.resolve_dataset_path(dataset)
+    work, _, _ = storage.begin_episode(path, "node-export-run")
+    storage.append_frame(work, {
+        "frame_index": 0, "timestamp": 0.0, "recorded_at_ns": 1,
+        "task": "Export", "robot": _sample(0), "cameras": {},
+    }, {})
+    storage.save_episode(path, "node-export-run")
+    output = tmp_path / "new" / "nested" / "hdf5-export"
+
+    checked = _NODE_REGISTRY["HDF5EpisodeExport"]({
+        "action": "check", "dataset": dataset, "output_path": str(output), "include_images": False,
+    })
+    assert checked["ok"] and not checked["exported"]
+    assert checked["status"] == "checked_not_exported"
+    assert "CHECK ONLY" in checked["report"]
+    assert not output.exists()
+
+    result = _NODE_REGISTRY["HDF5EpisodeExport"]({
+        "dataset": dataset, "output_path": str(output), "include_images": False,
+    })
+    assert result["ok"] and result["exported"]
+    assert result["status"] == "exported"
+    assert result["path"] == str(output.resolve())
+    assert (output / "episode_0.hdf5").is_file()
+    assert (output / "blacknode-export.json").is_file()
+    assert "EXPORTED 1 episode file" in result["report"]
+    existing = _NODE_REGISTRY["HDF5EpisodeExport"]({
+        "dataset": dataset, "output_path": str(output), "include_images": False,
+    })
+    assert existing["ok"] and existing["exported"]
+    assert existing["status"] == "exists"
+    assert "left unchanged" in existing["report"]
+    rebuilt = _NODE_REGISTRY["HDF5EpisodeExport"]({
+        "dataset": dataset, "output_path": str(output), "include_images": False, "overwrite": True,
+    })
+    assert rebuilt["ok"] and rebuilt["status"] == "exported"
 
 
 @pytest.mark.skipif(h5py is None, reason="h5py is installed by Blacknode package setup")
@@ -260,11 +386,62 @@ def test_upload_check_has_no_network_side_effect(tmp_path: Path):
     export = tmp_path / "export"
     (export / "meta").mkdir(parents=True)
     (export / "meta/info.json").write_text("{}", encoding="utf-8")
+    (export / "README.md").write_text("# LeRobot", encoding="utf-8")
     result = _NODE_REGISTRY["HuggingFaceDatasetUpload"]({
         "action": "check", "export_path": str(export), "repo_id": "owner/dataset",
     })
     assert result["ok"]
     assert not result["uploaded"]
+    assert result["status"] == "checked_not_uploaded"
+    assert result["format"] == "lerobot-v3"
+
+    blacknode_export = tmp_path / "blacknode-export"
+    (blacknode_export / "data").mkdir(parents=True)
+    (blacknode_export / "blacknode").mkdir()
+    (blacknode_export / "README.md").write_text("# Blacknode", encoding="utf-8")
+    (blacknode_export / "data/train-000000.parquet").write_bytes(b"test")
+    (blacknode_export / "blacknode/manifest.json").write_text("{}", encoding="utf-8")
+    (blacknode_export / "blacknode-export.json").write_text(
+        json.dumps({"kind": "blacknode.huggingface-export"}), encoding="utf-8",
+    )
+    blacknode_result = _NODE_REGISTRY["HuggingFaceDatasetUpload"]({
+        "action": "check", "export_path": str(blacknode_export), "repo_id": "owner/blacknode-dataset",
+    })
+    assert blacknode_result["ok"] and not blacknode_result["uploaded"]
+    assert blacknode_result["format"] == "blacknode-hub"
+
+
+def test_upload_uses_shared_hugging_face_credential_without_exposing_it(tmp_path: Path, monkeypatch):
+    export = tmp_path / "export"
+    (export / "meta").mkdir(parents=True)
+    (export / "meta/info.json").write_text("{}", encoding="utf-8")
+    (export / "README.md").write_text("# LeRobot", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class FakeApi:
+        def __init__(self, token=None):
+            captured["token"] = token
+
+        def create_repo(self, **kwargs):
+            captured["create"] = kwargs
+
+        def upload_folder(self, **kwargs):
+            captured["upload"] = kwargs
+
+    upload = _NODE_REGISTRY["HuggingFaceDatasetUpload"]
+    monkeypatch.setitem(
+        upload.__globals__, "api_key_for_provider",
+        lambda provider, env_var, explicit: "terminal-or-shared-token",
+    )
+    import huggingface_hub
+    monkeypatch.setattr(huggingface_hub, "HfApi", FakeApi)
+
+    result = upload({
+        "action": "upload", "export_path": str(export), "repo_id": "owner/dataset",
+    })
+    assert result["ok"] and result["uploaded"]
+    assert captured["token"] == "terminal-or-shared-token"
+    assert "terminal-or-shared-token" not in json.dumps(result)
 
 
 def test_recorder_captures_streams_and_saves(tmp_path: Path):

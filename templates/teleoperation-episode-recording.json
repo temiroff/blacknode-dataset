@@ -805,10 +805,11 @@
         700
       ],
       "params": {
-        "action": "check",
+        "action": "export",
         "output_path": "",
         "include_images": true,
-        "compression": "gzip"
+        "compression": "gzip",
+        "overwrite": false
       },
       "inputs": [
         "trigger",
@@ -816,11 +817,13 @@
         "dataset",
         "output_path",
         "include_images",
-        "compression"
+        "compression",
+        "overwrite"
       ],
       "outputs": [
         "ok",
         "exported",
+        "status",
         "export",
         "path",
         "report"
@@ -831,32 +834,47 @@
         "dataset": "Dict",
         "output_path": "Text",
         "include_images": "Bool",
-        "compression": "Text"
+        "compression": "Text",
+        "overwrite": "Bool"
       },
       "output_types": {
         "ok": "Bool",
         "exported": "Bool",
+        "status": "Text",
         "export": "Dict",
         "path": "Text",
         "report": "Text"
       },
       "input_defaults": {
-        "action": "check",
+        "action": "export",
         "output_path": "",
         "include_images": true,
-        "compression": "gzip"
+        "compression": "gzip",
+        "overwrite": false
       },
       "input_choices": {
         "action": [
-          "check",
-          "export"
+          "export",
+          "check"
         ],
         "compression": [
           "gzip",
           "lzf",
           "none"
         ]
-      }
+      },
+      "promoted_inputs": [
+        "action",
+        "dataset",
+        "output_path",
+        "overwrite"
+      ],
+      "promoted_outputs": [
+        "exported",
+        "status",
+        "path",
+        "report"
+      ]
     },
     "camera_list": {
       "id": "camera_list",

@@ -25,6 +25,9 @@ provides a calibrated SO-ARM101 leader/follower flow, a local camera preview,
 dynamic multi-camera collection, a dataset, and an inline recorder dashboard.
 Motion starts disarmed and recording starts in `status` mode.
 
+Use `templates/blacknode-huggingface-publish.json` to prepare a recorded
+dataset for the Hugging Face Dataset Viewer and explicitly publish it.
+
 `DatasetCreate` stores data under `~/.blacknode/datasets/<dataset-id>` by
 default. The editor shows that resolved location and provides **Choose folder**
 to select a visible storage root such as `E:\RobotData`; the dataset ID remains
@@ -46,8 +49,9 @@ not affect dataset contents or portability.
 | `EpisodeDatasetSummary` | Inspect saved episodes, frame totals, duration, cameras, joints, and recoverable journals. |
 | `EpisodeDatasetValidate` | Validate manifests, Parquet rows, videos, timestamps, and feature consistency. |
 | `HDF5EpisodeExport` | Check or export one Blacknode HDF5 file per saved episode. |
+| `BlacknodeHubExport` | Prepare a Blacknode-native Hugging Face Hub dataset with frame, episode, and media previews. |
 | `LeRobotV3Export` | Write the v3 structured Parquet/MP4 repository profile. |
-| `HuggingFaceDatasetUpload` | Check or explicitly publish a prepared repository export. |
+| `HuggingFaceDatasetUpload` | Check or explicitly publish a prepared Blacknode Hub or LeRobot v3 export. |
 
 ## Recording lifecycle
 
@@ -241,6 +245,12 @@ camera shapes, codec information, duration, and save time.
 
 `HDF5EpisodeExport` writes one `episode_<index>.hdf5` file per saved episode:
 
+The node defaults to `action=export`: cooking it writes the files and creates
+the complete destination directory path automatically. Select `action=check`
+only when you want validation without writing; that mode displays
+`checked_not_exported`. Rerunning against a valid export reports `exists` and
+keeps it unchanged. Enable `overwrite` to replace it atomically.
+
 ```text
 /observations/qpos                 float32 [T, joints]
 /observations/leader               float32 [T, joints]
@@ -261,7 +271,37 @@ Images support `gzip`, `lzf`, or uncompressed storage. Export happens through a
 temporary directory and becomes visible after every episode and camera passes
 frame-count validation.
 
-## Structured Parquet/MP4 export profile
+## Blacknode Hugging Face Hub profile
+
+`BlacknodeHubExport` writes a Blacknode-native repository that Hugging Face can
+load and preview directly:
+
+```text
+README.md                         dataset card and Hub configurations
+data/train-<episode>.parquet      frame-level observations, actions, and timing
+episodes.parquet                  episode summaries and camera paths
+media/metadata.parquet            video index for the media configuration
+media/videos/<camera>/*.mp4       synchronized camera recordings
+blacknode/manifest.json           portable Blacknode dataset metadata
+blacknode-export.json             export identity and provenance
+```
+
+The dataset card exposes `frames`, `episodes`, and `media` configurations. This
+lets the Hub Dataset Viewer show policy rows, episode-level summaries, and
+camera media separately while keeping one repository. Exported public metadata
+does not contain local calibration paths or robot hardware IDs.
+
+The node defaults to `action=export`, so cooking it prepares the repository.
+Its optional `check` action validates without writing. Then pass the export
+path to `HuggingFaceDatasetUpload`, set `repo_id` to
+`account/dataset-name`, check the inputs, and explicitly choose
+`action=upload`. The upload node detects and reports `blacknode-hub` or
+`lerobot-v3` before publishing.
+
+Rerunning `BlacknodeHubExport` against its own valid output reports `exists`.
+Enable `overwrite` only when the prepared files need to be rebuilt.
+
+## LeRobot v3 Parquet/MP4 export profile
 
 `LeRobotV3Export` writes:
 
@@ -279,10 +319,12 @@ The export includes typed feature definitions, task and episode metadata,
 normalization statistics, global frame indexes, camera video metadata, robot
 type, dataset split information, and Blacknode export provenance.
 
-`HuggingFaceDatasetUpload` starts in `check` mode. Publishing occurs only after
-choosing `action=upload`. Authentication uses the configured account or
-`HF_TOKEN`; credentials are never written into dataset manifests or node
-outputs.
+LeRobot remains an optional interoperability profile. It can be published by
+the same `HuggingFaceDatasetUpload` node. Authentication checks an explicit
+node override first, then `HF_TOKEN` from the terminal environment, then the
+`"Hugging Face"` entry in `editor-server/api_keys.json`. The editor exposes the
+shared credential beside the upload node. Credentials are never written into
+workflow JSON, dataset manifests, or node outputs.
 
 ## Before-training smoothing
 
