@@ -3,6 +3,7 @@ name = "blacknode-dataset"
 version = "0.1.0"
 description = "Blacknode-native episode recording, validation, HDF5, Hugging Face Hub and LeRobot export, and repository publishing."
 requires-blacknode = ">=0.1.0"
+layer = "learning"
 
 [categories]
 "Dataset" = "#8b5cf6"
@@ -19,31 +20,54 @@ capabilities = ["dataset.recording"]
 templates = ["components/recording/templates"]
 
 # Roadmap component; sources land in components/replay/nodes.
+node-types = [
+  "DatasetBrowser", "DatasetCameraStreamList", "DatasetCreate", "EpisodeRecorder"
+]
+
 [components.replay]
 description = "Episode replay and trajectory smoothing."
 default = true
 capabilities = ["dataset.replay"]
 
 # Roadmap component; sources land in components/validation/nodes.
+node-types = [
+  "EpisodeReplay", "TrajectorySmoother"
+]
+
 [components.validation]
 description = "Dataset validation, summaries, and statistics."
 default = true
 capabilities = ["dataset.validation"]
 
 # Roadmap component; sources land in components/evaluation/nodes.
+node-types = [
+  "EpisodeDatasetSummary", "EpisodeDatasetValidate", "EpisodeStats"
+]
+
 [components.evaluation]
 description = "Episode scoring and evaluation."
 default = true
 capabilities = ["dataset.evaluation"]
 
 # Roadmap component; sources land in components/export/nodes.
+node-types = [
+  "EpisodeEvaluator"
+]
+
 [components.export]
 description = "HDF5 and LeRobot dataset export."
 default = true
 capabilities = ["dataset.export"]
 
 # Roadmap component; sources land in components/publishing/nodes.
+node-types = [
+  "HDF5EpisodeExport", "LeRobotV3Export"
+]
+
 [components.publishing]
 description = "Hub upload and repository publishing."
 default = true
 capabilities = ["dataset.publishing"]
+node-types = [
+  "BlacknodeHubExport", "HuggingFaceDatasetUpload", "StreamPublisher"
+]
