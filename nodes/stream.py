@@ -36,7 +36,8 @@ _CATEGORY = "Dataset"
               "rate": Float(default=1.0),
               "loop": Bool(default=True),
               "sync_to_browser": Bool(default=True)},
-      outputs={"stream_url": Text, "streaming": Bool, "clients": Int,
+      outputs={
+        "frame_stream": Dict,"stream_url": Text, "streaming": Bool, "clients": Int,
                "status": Dict, "dashboard": Image, "report": Text})
 def stream_publisher(ctx: dict) -> dict:
     action = str(ctx.get("action") or "status").strip().lower()
