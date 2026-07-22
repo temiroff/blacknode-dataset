@@ -48,6 +48,11 @@ jobs:
         run: |
           mkdir -p core/packages
           ln -s "$GITHUB_WORKSPACE/package" "core/packages/${GITHUB_REPOSITORY#*/}"
+      - name: Enable optional components the templates use
+        working-directory: core
+        env:
+          PYTHONPATH: python
+        run: python -m blacknode.cli packages enable blacknode-skills follow-person --adapter ros2
       - name: Run package tests
         working-directory: package
         env:
