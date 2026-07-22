@@ -16,6 +16,7 @@ imports = ["pyarrow", "pandas", "cv2", "numpy", "huggingface_hub", "h5py", "imag
 description = "Episode capture, dataset creation, and stream browsing."
 default = true
 capabilities = ["dataset.recording"]
+templates = ["components/recording/templates"]
 
 # Roadmap component; sources land in components/replay/nodes.
 [components.replay]
