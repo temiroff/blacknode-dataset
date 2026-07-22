@@ -18,7 +18,7 @@ def _dashboard(status: dict[str, Any]) -> str:
     return runtime.dashboard(status)
 
 
-@node(name="DatasetCameraStreamList", category=_CATEGORY,
+@node(name="DatasetCameraStreamList", component="recording", category=_CATEGORY,
       description="Collect any number of frame-stream handles through dynamic camera_N sockets and deduplicate them by stream ID.",
       inputs={"trigger": AnyPort},
       outputs={"camera_streams": List, "camera_count": Int, "report": Text},
@@ -59,7 +59,7 @@ def dataset_camera_stream_list(ctx: dict) -> dict:
     return {"camera_streams": streams, "camera_count": len(streams), "report": report}
 
 
-@node(name="DatasetCreate", category=_CATEGORY,
+@node(name="DatasetCreate", component="recording", category=_CATEGORY,
       description="Create or reopen a Blacknode-native episode dataset.",
       inputs={"trigger": AnyPort, "dataset_id": Text(default="teleoperation-demo"), "root": Text(default=""),
               "task": Text(default="Teleoperate the robot"), "fps": Int(default=30),
@@ -78,7 +78,7 @@ def dataset_create(ctx: dict) -> dict:
         return {"dataset": {}, "path": "", "summary": {}, "report": f"dataset create FAILED: {exc}"}
 
 
-@node(name="DatasetBrowser", category=_CATEGORY,
+@node(name="DatasetBrowser", component="recording", category=_CATEGORY,
       description="Browse datasets and episodes, replay and trim a selected camera, and inspect synchronized robot observations, actions, leader state, timing, and artifact paths.",
       inputs={"trigger": AnyPort, "dataset": Dict(default={}), "root": Text(default=""), "dataset_id": Text(default=""),
               "episode_index": Int(default=0), "camera": Text(default=""), "refresh_key": Int(default=0)},
@@ -127,7 +127,7 @@ def dataset_browser(ctx: dict) -> dict:
                 "report": f"dataset browser FAILED: {exc}"}
 
 
-@node(name="EpisodeRecorder", live=True, category=_CATEGORY,
+@node(name="EpisodeRecorder", component="recording", live=True, category=_CATEGORY,
       description="Record synchronized teleoperation samples and camera frames into a recoverable episode journal.",
       inputs={"trigger": AnyPort, "action": Enum(["status", "start", "pause", "resume", "save", "finalize", "stop", "discard"], default="status"),
               "run_id": Text(default="episode_recorder"), "dataset": Dict(default={}),
@@ -170,7 +170,7 @@ def episode_recorder(ctx: dict) -> dict:
                 "report": f"episode recorder FAILED: {exc}"}
 
 
-@node(name="EpisodeDatasetSummary", category=_CATEGORY, description="Summarize saved and recoverable episodes.",
+@node(name="EpisodeDatasetSummary", component="validation", category=_CATEGORY, description="Summarize saved and recoverable episodes.",
       inputs={"trigger": AnyPort, "dataset": Dict(default={})},
       outputs={"summary": Dict, "episode_count": Int, "frame_count": Int, "report": Text})
 def dataset_summary(ctx: dict) -> dict:
@@ -184,7 +184,7 @@ def dataset_summary(ctx: dict) -> dict:
         return {"summary": {}, "episode_count": 0, "frame_count": 0, "report": f"summary FAILED: {exc}"}
 
 
-@node(name="EpisodeReplay", category=_CATEGORY,
+@node(name="EpisodeReplay", component="replay", category=_CATEGORY,
       description="Replay a saved episode camera video with recorded task, timing, joint, and storage metadata. Playback never commands a robot.",
       inputs={"trigger": AnyPort, "dataset": Dict(default={}), "episode_index": Int(default=0),
               "camera": Text(default="")},
@@ -214,7 +214,7 @@ def episode_replay(ctx: dict) -> dict:
                 "report": f"episode replay FAILED: {exc}"}
 
 
-@node(name="EpisodeDatasetValidate", category=_CATEGORY, description="Validate manifests, Parquet rows, videos, timestamps, and feature consistency.",
+@node(name="EpisodeDatasetValidate", component="validation", category=_CATEGORY, description="Validate manifests, Parquet rows, videos, timestamps, and feature consistency.",
       inputs={"trigger": AnyPort, "dataset": Dict(default={})},
       outputs={"ok": Bool, "validation": Dict, "report": Text})
 def dataset_validate(ctx: dict) -> dict:
@@ -227,7 +227,7 @@ def dataset_validate(ctx: dict) -> dict:
         return {"ok": False, "validation": {"ok": False, "errors": [str(exc)]}, "report": f"validation FAILED: {exc}"}
 
 
-@node(name="LeRobotV3Export", category=_CATEGORY,
+@node(name="LeRobotV3Export", component="export", category=_CATEGORY,
       description="Export a validated dataset to LeRobot v3 Parquet/MP4 layout without importing LeRobot. Optional "
                   "before-training smoothing filters each episode's joint trajectories (zero-lag) so the policy "
                   "learns intended motion, not teleop jitter.",
@@ -249,7 +249,7 @@ def lerobot_v3_export(ctx: dict) -> dict:
         return {"ok": False, "export": {}, "path": "", "report": f"LeRobot export FAILED: {exc}"}
 
 
-@node(name="BlacknodeHubExport", category=_CATEGORY,
+@node(name="BlacknodeHubExport", component="publishing", category=_CATEGORY,
       description="Export a Blacknode-native Hugging Face Hub dataset with previewable Parquet frames, episode metadata, videos, and a dataset card. Existing valid exports are reused unless overwrite is enabled.",
       inputs={"trigger": AnyPort, "action": Enum(["export", "check"], default="export"),
               "dataset": Dict(default={}), "output_path": Text(default=""), "repo_id": Text(default=""),
@@ -308,7 +308,7 @@ def blacknode_hub_export(ctx: dict) -> dict:
         }
 
 
-@node(name="HDF5EpisodeExport", category=_CATEGORY,
+@node(name="HDF5EpisodeExport", component="export", category=_CATEGORY,
       description="Export one ACT-style HDF5 file per saved episode and create the destination folder. Existing valid exports are reused unless overwrite is enabled.",
       inputs={"trigger": AnyPort, "action": Enum(["export", "check"], default="export"),
               "dataset": Dict(default={}), "output_path": Text(default=""),
@@ -394,7 +394,7 @@ def _huggingface_export_format(path: Path) -> str:
     return ""
 
 
-@node(name="HuggingFaceDatasetUpload", category=_CATEGORY,
+@node(name="HuggingFaceDatasetUpload", component="publishing", category=_CATEGORY,
       description="Check or explicitly upload a prepared Blacknode Hub or LeRobot v3 export to a Hugging Face dataset repository.",
       inputs={"trigger": AnyPort, "action": Enum(["check", "upload"], default="check"),
               "export_path": Text(default=""), "repo_id": Text(default=""), "private": Bool(default=False),

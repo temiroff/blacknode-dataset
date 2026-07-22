@@ -19,7 +19,7 @@ from . import runtime
 _CATEGORY = "Dataset"
 
 
-@node(name="StreamPublisher", live=True, category=_CATEGORY,
+@node(name="StreamPublisher", component="publishing", live=True, category=_CATEGORY,
       description="Broadcast a stream frame-by-frame to any app over a plain WebSocket. Connect a 'stream' handle "
                   "(from DatasetBrowser, TrajectorySmoother, policy replay, or a live sample-stream), set action=start, and "
                   "connect subscribers to stream_url. Recorded replay follows Dataset Browser play and seek by "

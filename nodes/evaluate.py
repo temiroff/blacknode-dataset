@@ -88,7 +88,7 @@ def _score(signals: dict, verdict: dict) -> float:
 
 
 @node(
-    name="EpisodeEvaluator", category=_CATEGORY,
+    name="EpisodeEvaluator", component="evaluation", category=_CATEGORY,
     description="Judge a recorded episode into success/score/failed_stage/confidence with a "
                 "self-calibrating subtask timeline and evidence signals. No task assumptions: "
                 "the analysis derives everything from the episode; success needs a caller-supplied "
@@ -180,7 +180,7 @@ def _bool(value: Any, default: bool = True) -> bool:
 
 
 @node(
-    name="EpisodeStats", category=_CATEGORY,
+    name="EpisodeStats", component="validation", category=_CATEGORY,
     description="Aggregate the verdicts already written to a dataset's episodes into a success "
                 "rate and a ranked failure breakdown. Pure aggregation — no sensing, no models.",
     inputs={"trigger": AnyPort, "dataset": Dict(default={}), "root": Text(default=""),

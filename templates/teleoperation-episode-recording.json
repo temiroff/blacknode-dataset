@@ -12,6 +12,7 @@
     "description": "Run calibrated leader-follower teleoperation and one or more local cameras, preview them live, then record synchronized robot observations/actions and frames into crash-recoverable episodes. Recorder starts in status mode and teleoperation starts disarmed.",
     "color": "#8b5cf6",
     "required_packages": [
+      "blacknode-controllers",
       "blacknode-robot",
       "blacknode-ros2",
       "blacknode-perception",

@@ -18,7 +18,7 @@ from . import runtime
 _CATEGORY = "Dataset"
 
 
-@node(name="TrajectorySmoother", category=_CATEGORY,
+@node(name="TrajectorySmoother", component="replay", category=_CATEGORY,
       description="Smooth a recorded episode's joint trajectories offline (zero-lag) and emit a new 'stream' handle. "
                   "Wire DatasetBrowser.stream in and this node's stream into StreamPublisher to broadcast smoothed "
                   "motion while preserving the exact first and last episode poses. spline (cubic B-spline) and "
