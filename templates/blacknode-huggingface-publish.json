@@ -8,7 +8,12 @@
     "template": true,
     "description": "Browse and validate a recorded episode dataset, prepare the Blacknode Hub-native preview profile, then explicitly publish it to a Hugging Face dataset repository.",
     "color": "#8b5cf6",
-    "required_packages": ["blacknode-dataset"]
+    "required_packages": ["blacknode-dataset"],
+    "required_components": [
+      "blacknode-dataset/recording",
+      "blacknode-dataset/validation",
+      "blacknode-dataset/publishing"
+    ]
   },
   "node_meta": {
     "dataset_browser": {

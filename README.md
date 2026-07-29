@@ -6,6 +6,20 @@ FPS, journals every captured frame, atomically saves Parquet and MP4 artifacts,
 validates dataset consistency, and provides HDF5 and structured Parquet/MP4
 export profiles.
 
+The normal runtime enables `recording`, `replay`, and `validation`. Evaluation,
+export, and repository publishing are optional components activated by
+workflows that declare them:
+
+```text
+blacknode-dataset
+├── recording      default
+├── replay         default
+├── validation     default
+├── evaluation     optional
+├── export         optional
+└── publishing     optional
+```
+
 ## Install
 
 ```powershell
