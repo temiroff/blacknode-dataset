@@ -28,7 +28,7 @@ jobs:
           mkdir -p core/packages
           git clone --depth 1 https://github.com/temiroff/blacknode-ros2.git core/packages/blacknode-ros2
           git clone --depth 1 https://github.com/temiroff/blacknode-robot.git core/packages/blacknode-robot
-          git clone --depth 1 https://github.com/temiroff/blacknode-controllers.git core/packages/blacknode-controllers
+          git clone --depth 1 https://github.com/temiroff/blacknode-motion.git core/packages/blacknode-motion
           git clone --depth 1 https://github.com/temiroff/blacknode-perception.git core/packages/blacknode-perception
           git clone --depth 1 https://github.com/temiroff/blacknode-skills.git core/packages/blacknode-skills
       - name: Set up Python
@@ -52,7 +52,7 @@ jobs:
         working-directory: core
         env:
           PYTHONPATH: python
-        run: python -m blacknode.cli packages enable blacknode-skills follow-person --adapter ros2
+        run: python -m blacknode.cli packages enable blacknode-skills follow --adapter ros2
       - name: Run package tests
         working-directory: package
         env:
