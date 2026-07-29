@@ -13,6 +13,10 @@
     "color": "#8b5cf6",
     "required_packages": [
       "blacknode-dataset"
+    ],
+    "required_components": [
+      "blacknode-dataset/recording",
+      "blacknode-dataset/replay"
     ]
   },
   "node_meta": {

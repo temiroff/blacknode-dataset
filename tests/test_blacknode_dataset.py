@@ -7,6 +7,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -21,27 +22,53 @@ except ImportError:
 
 import blacknode  # noqa: F401 - triggers package discovery
 from blacknode.node import _NODE_REGISTRY
-from blacknode.packages import _import_nodes_module, _tag_new_package_nodes
+from blacknode.packages import (
+    _PACKAGE_REGISTRY,
+    _import_nodes_module,
+    _tag_new_package_nodes,
+    load_package,
+)
+
+_PACKAGE_DIR = Path(__file__).resolve().parents[1]
+with patch(
+    "blacknode.packages._read_component_overrides",
+    return_value=({
+        "recording": True,
+        "replay": True,
+        "validation": True,
+        "evaluation": True,
+        "export": True,
+        "publishing": True,
+    }, ""),
+):
+    load_package(_PACKAGE_DIR)
+
 from blacknode.pkg.blacknode_dataset import storage
 from blacknode.pkg.blacknode_dataset import runtime
 from blacknode.workflow import validate_workflow
 
 # teleoperation-episode-recording.json uses ROS2LeaderFollower, which lives in
-# blacknode-skills' disabled-by-default follow-person/ros2 adapter. Tagging
+# blacknode-skills' disabled-by-default follow/ros2 adapter. Tagging
 # matches blacknode-skills' own test setup exactly so registration is correct
 # regardless of which test file's collection imports these modules first.
-_FOLLOW_PERSON_ROOT = Path(__file__).resolve().parents[2] / "blacknode-skills" / "components" / "follow-person"
+_FOLLOW_PERSON_ROOT = Path(__file__).resolve().parents[2] / "blacknode-skills" / "components" / "follow"
 _FOLLOW_PERSON_ADAPTER_NODES = _FOLLOW_PERSON_ROOT / "adapters" / "ros2" / "nodes"
 _before_follow_person = dict(_NODE_REGISTRY)
-_import_nodes_module("blacknode.pkg.blacknode_skills.follow_person", _FOLLOW_PERSON_ROOT / "nodes")
-_import_nodes_module("blacknode.pkg.blacknode_skills.follow_person.adapters.ros2", _FOLLOW_PERSON_ADAPTER_NODES)
-_tag_new_package_nodes(_before_follow_person, "blacknode-skills", _FOLLOW_PERSON_ADAPTER_NODES, "follow-person", "ros2")
+_import_nodes_module("blacknode.pkg.blacknode_skills.follow", _FOLLOW_PERSON_ROOT / "nodes")
+_import_nodes_module("blacknode.pkg.blacknode_skills.follow.adapters.ros2", _FOLLOW_PERSON_ADAPTER_NODES)
+_tag_new_package_nodes(_before_follow_person, "blacknode-skills", _FOLLOW_PERSON_ADAPTER_NODES, "follow", "ros2")
 
 
 EXPECTED = {
     "DatasetCameraStreamList", "DatasetCreate", "DatasetBrowser", "EpisodeRecorder", "EpisodeDatasetSummary", "EpisodeDatasetValidate",
     "EpisodeReplay", "LeRobotV3Export", "BlacknodeHubExport", "HDF5EpisodeExport", "HuggingFaceDatasetUpload",
 }
+
+
+def test_manifest_defaults_keep_heavier_dataset_operations_optional():
+    info = _PACKAGE_REGISTRY["blacknode-dataset"]
+    assert all(info.components[name]["default"] for name in {"recording", "replay", "validation"})
+    assert not any(info.components[name]["default"] for name in {"evaluation", "export", "publishing"})
 
 
 def _jpeg(value: int) -> bytes:
