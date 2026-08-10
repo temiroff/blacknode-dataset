@@ -767,6 +767,9 @@ def export_lerobot_v3(path: Path, output: Path, repo_id: str = "",
         "episode_index": {"dtype": "int64", "shape": [1], "names": None},
         "index": {"dtype": "int64", "shape": [1], "names": None},
         "task_index": {"dtype": "int64", "shape": [1], "names": None},
+        "blacknode.recorded_at_ns": {"dtype": "int64", "shape": [1], "names": None},
+        "blacknode.sample_sequence": {"dtype": "int64", "shape": [1], "names": None},
+        "blacknode.captured_at_ns": {"dtype": "int64", "shape": [1], "names": None},
     }
     for camera, info in camera_features.items():
         features[f"observation.images.{camera}"] = {
@@ -784,6 +787,12 @@ def export_lerobot_v3(path: Path, output: Path, repo_id: str = "",
                 "has_audio": bool(info.get("has_audio", False)),
             },
         }
+        features[f"blacknode.camera.{camera}.sequence"] = {
+            "dtype": "int64", "shape": [1], "names": None,
+        }
+        features[f"blacknode.camera.{camera}.captured_at_ns"] = {
+            "dtype": "int64", "shape": [1], "names": None,
+        }
     global_index = 0
     episode_meta_rows: list[dict[str, Any]] = []
     observation_values: list[list[float]] = []
@@ -800,7 +809,7 @@ def export_lerobot_v3(path: Path, output: Path, repo_id: str = "",
         action = _smooth_rows(action, smoothing, smoothing_strength, fps)
         observation_values.extend(observation)
         action_values.extend(action)
-        data_table = pa.table({
+        data_columns = {
             "observation.state": pa.array(observation, type=pa.list_(pa.float32(), len(joint_names))),
             "action": pa.array(action, type=pa.list_(pa.float32(), len(joint_names))),
             "timestamp": pa.array(timestamps, type=pa.float32()),
@@ -808,7 +817,24 @@ def export_lerobot_v3(path: Path, output: Path, repo_id: str = "",
             "episode_index": pa.array([ep_index] * frame_count, type=pa.int64()),
             "index": pa.array(list(range(global_index, global_index + frame_count)), type=pa.int64()),
             "task_index": pa.array([0] * frame_count, type=pa.int64()),
-        })
+            "blacknode.recorded_at_ns": pa.array(
+                table.column("recorded_at_ns").to_pylist(), type=pa.int64()
+            ),
+            "blacknode.sample_sequence": pa.array(
+                table.column("sample_sequence").to_pylist(), type=pa.int64()
+            ),
+            "blacknode.captured_at_ns": pa.array(
+                table.column("captured_at_ns").to_pylist(), type=pa.int64()
+            ),
+        }
+        for camera in camera_features:
+            data_columns[f"blacknode.camera.{camera}.sequence"] = pa.array(
+                table.column(f"camera.{camera}.sequence").to_pylist(), type=pa.int64()
+            )
+            data_columns[f"blacknode.camera.{camera}.captured_at_ns"] = pa.array(
+                table.column(f"camera.{camera}.captured_at_ns").to_pylist(), type=pa.int64()
+            )
+        data_table = pa.table(data_columns)
         data_path = output / "data" / "chunk-000" / f"file-{ep_index:03d}.parquet"
         data_path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(data_table, data_path, compression="snappy")
@@ -849,6 +875,12 @@ def export_lerobot_v3(path: Path, output: Path, repo_id: str = "",
         "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
         "robot_type": str(manifest.get("robot_type") or "blacknode-robot"),
         "splits": {"train": f"0:{len(episodes)}"},
+        "blacknode": {
+            "schema_version": 1,
+            "state_units": str(manifest.get("features", {}).get("units") or ""),
+            "action_units": str(manifest.get("features", {}).get("units") or ""),
+            "robot_identity": dict(manifest.get("metadata") or {}),
+        },
     }
     _atomic_json(meta_dir / "info.json", info)
     _atomic_json(meta_dir / "stats.json", {

@@ -9,9 +9,35 @@ from blacknode.node import Any as AnyPort
 from blacknode.node import Bool, Dict, Enum, Float, Image, Int, List, Text, Video, node
 from blacknode.providers.keys import api_key_for_provider
 
-from . import runtime, storage
+from . import adapters, runtime, storage
 
 _CATEGORY = "Dataset"
+
+
+@node(name="LeRobotDataset", component="adapters", category=_CATEGORY,
+      description="Resolve a local LeRobot v3 or immutable Hugging Face LeRobot dataset as a portable BlacknodeDataset source.",
+      inputs={"trigger": AnyPort, "uri": Text(default=""), "revision": Text(default=""),
+              "source_uri": Text(default="")},
+      outputs={"dataset": Dict, "uri": Text, "revision": Text, "report": Text},
+      primary_inputs=["uri", "revision"], primary_outputs=["dataset", "report"])
+def lerobot_dataset(ctx: dict) -> dict:
+    try:
+        dataset = adapters.lerobot_source_descriptor(
+            str(ctx.get("uri") or ""), str(ctx.get("revision") or "")
+        )
+        source_uri = str(ctx.get("source_uri") or "").strip()
+        if source_uri:
+            dataset["local_uri"] = str(dataset.get("uri") or "")
+            dataset["uri"] = source_uri
+            dataset.setdefault("metadata", {})["source_uri"] = source_uri
+        return {
+            "dataset": dataset,
+            "uri": str(dataset.get("uri") or ""),
+            "revision": str(dataset.get("revision") or ""),
+            "report": f"LeRobot dataset ready: {dataset.get('uri')}",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"dataset": {}, "uri": "", "revision": "", "report": f"LeRobot dataset FAILED: {exc}"}
 
 
 def _dashboard(status: dict[str, Any]) -> str:

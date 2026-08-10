@@ -1,3 +1,4 @@
+from . import adapters  # noqa: F401
 from . import dataset  # noqa: F401
 from . import evaluate  # noqa: F401
 from . import smoothing  # noqa: F401

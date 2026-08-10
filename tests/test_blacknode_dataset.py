@@ -33,6 +33,7 @@ _PACKAGE_DIR = Path(__file__).resolve().parents[1]
 with patch(
     "blacknode.packages._read_component_overrides",
     return_value=({
+        "adapters": True,
         "recording": True,
         "replay": True,
         "validation": True,
@@ -43,8 +44,7 @@ with patch(
 ):
     load_package(_PACKAGE_DIR)
 
-from blacknode.pkg.blacknode_dataset import storage
-from blacknode.pkg.blacknode_dataset import runtime
+from blacknode.pkg.blacknode_dataset import adapters, runtime, storage
 from blacknode.workflow import validate_workflow
 
 # teleoperation-episode-recording.json uses ROS2LeaderFollower, which lives in
@@ -61,7 +61,7 @@ _tag_new_package_nodes(_before_follow_person, "blacknode-skills", _FOLLOW_PERSON
 
 EXPECTED = {
     "DatasetCameraStreamList", "DatasetCreate", "DatasetBrowser", "EpisodeRecorder", "EpisodeDatasetSummary", "EpisodeDatasetValidate",
-    "EpisodeReplay", "LeRobotV3Export", "BlacknodeHubExport", "HDF5EpisodeExport", "HuggingFaceDatasetUpload",
+    "EpisodeReplay", "LeRobotDataset", "LeRobotV3Export", "BlacknodeHubExport", "HDF5EpisodeExport", "HuggingFaceDatasetUpload",
 }
 
 
@@ -208,6 +208,41 @@ def test_native_save_validate_and_lerobot_v3_export(tmp_path: Path):
     assert tasks.loc["Pick the cube", "task_index"] == 0
     assert pq.read_table(output / "data/chunk-000/file-000.parquet").num_rows == 3
     assert (output / "videos/observation.images.wrist/chunk-000/file-000.mp4").exists()
+    lerobot_dataset = adapters.LeRobotDatasetAdapter(output, revision="fixture-revision").open()
+    assert lerobot_dataset.metadata.source_format == "lerobot-v3"
+    assert lerobot_dataset.metadata.source_revision == "fixture-revision"
+    assert lerobot_dataset.robot_spec.state_names == ("shoulder", "gripper")
+    assert lerobot_dataset.robot_spec.state_units == "radians"
+    episode = lerobot_dataset.open_episode(lerobot_dataset.episode_ids()[0])
+    samples = list(episode.samples())
+    assert episode.descriptor.task == "Pick the cube"
+    assert [sample.timestamp for sample in samples] == pytest.approx([0.0, 0.1, 0.2])
+    assert [sample.recorded_at_ns for sample in samples] == [0, 1, 2]
+    for sample in samples:
+        assert sample.observation == pytest.approx((0.0, 0.1))
+        assert sample.action == pytest.approx((0.1, 0.2))
+    assert [sample.cameras["wrist"].captured_at_ns for sample in samples] == [0, 1, 2]
+
+    native_dataset = adapters.NativeDatasetAdapter(path).open()
+    native_samples = list(native_dataset.open_episode(native_dataset.episode_ids()[0]).samples())
+    assert [sample.observation for sample in native_samples] == [sample.observation for sample in samples]
+    assert [sample.action for sample in native_samples] == [sample.action for sample in samples]
+    assert _NODE_REGISTRY["LeRobotDataset"]({
+        "uri": str(output), "revision": "fixture-revision",
+    })["dataset"]["kind"] == "blacknode.dataset-source"
+    remote = _NODE_REGISTRY["LeRobotDataset"]({
+        "uri": "hf://owner/pick-cube", "revision": "0123456789abcdef",
+    })["dataset"]
+    assert remote["uri"] == "hf://owner/pick-cube"
+    assert remote["revision"] == "0123456789abcdef"
+    cloud = _NODE_REGISTRY["LeRobotDataset"]({
+        "uri": str(output),
+        "revision": "b" * 64,
+        "source_uri": "blacknode-cloud://datasets/dataset_" + "b" * 32,
+    })["dataset"]
+    assert cloud["local_uri"] == str(output.resolve())
+    assert cloud["uri"].startswith("blacknode-cloud://datasets/")
+    assert cloud["metadata"]["source_revision"] == "b" * 64
 
     hub_output = tmp_path / "blacknode-hub"
     hub_exported = storage.export_blacknode_hub(
