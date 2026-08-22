@@ -11,6 +11,135 @@
     "template": true,
     "description": "Run calibrated leader-follower teleoperation and one or more local cameras, preview them live, then record synchronized robot observations/actions and frames into crash-recoverable episodes. Recorder starts in status mode and teleoperation starts disarmed.",
     "color": "#8b5cf6",
+    "operator_view": {
+      "schema_version": 1,
+      "title": "Collect episodes",
+      "description": "Teleoperate the robot, monitor live cameras and motion, and capture synchronized demonstration episodes.",
+      "accent": "#fb7185",
+      "run_target": {
+        "node_id": "recorder",
+        "port": "dashboard",
+        "mode": "live",
+        "label": "Start live",
+        "confirm": "Start the teleoperation services? Support both arms and clear the workspace. The leader arm torque may be released; follower motion remains disarmed until you explicitly arm it."
+      },
+      "sections": [
+        {
+          "id": "live",
+          "title": "Live workspace",
+          "description": "Camera and robot motion views update from the workflow's managed services.",
+          "layout": "grid",
+          "widgets": [
+            {
+              "type": "image",
+              "id": "camera-preview",
+              "title": "Camera",
+              "source": { "node_id": "camera", "port": "preview" },
+              "empty": "Press Start live to connect the camera.",
+              "aspect": "video"
+            },
+            {
+              "type": "image",
+              "id": "motion-dashboard",
+              "title": "Robot motion",
+              "source": { "node_id": "follow", "port": "dashboard" },
+              "empty": "Motion telemetry appears after the robot streams are ready.",
+              "aspect": "dashboard"
+            }
+          ]
+        },
+        {
+          "id": "state",
+          "title": "Episode state",
+          "layout": "grid",
+          "widgets": [
+            {
+              "type": "status",
+              "id": "service-status",
+              "title": "Live status",
+              "items": [
+                { "label": "Camera", "node_id": "camera", "port": "streaming", "true_label": "Streaming", "false_label": "Stopped", "tone": "success" },
+                { "label": "Teleoperation", "node_id": "follow", "port": "live", "true_label": "Live", "false_label": "Stopped", "tone": "success" },
+                { "label": "Follower motion", "node_id": "follow", "port": "armed", "true_label": "Armed", "false_label": "Disarmed", "tone": "danger" },
+                { "label": "Recorder", "node_id": "recorder", "port": "recording", "true_label": "Recording", "false_label": "Ready", "tone": "success" }
+              ]
+            },
+            {
+              "type": "metrics",
+              "id": "episode-metrics",
+              "title": "Current episode",
+              "items": [
+                { "label": "Episode", "node_id": "recorder", "port": "episode_index", "format": "number" },
+                { "label": "Frames", "node_id": "recorder", "port": "frame_count", "format": "number" },
+                { "label": "Duration", "node_id": "recorder", "port": "duration_seconds", "format": "duration" },
+                { "label": "Dropped", "node_id": "recorder", "port": "dropped_frames", "format": "number" }
+              ]
+            },
+            {
+              "type": "image",
+              "id": "recorder-dashboard",
+              "title": "Recording timeline",
+              "source": { "node_id": "recorder", "port": "dashboard" },
+              "empty": "Recording status appears after Start live.",
+              "aspect": "dashboard"
+            }
+          ]
+        },
+        {
+          "id": "controls",
+          "title": "Setup and controls",
+          "description": "Configuration changes update the same underlying workflow that is available in Nodes mode.",
+          "layout": "grid",
+          "widgets": [
+            {
+              "type": "fields",
+              "id": "dataset-fields",
+              "title": "Dataset",
+              "items": [
+                { "label": "Dataset ID", "node_id": "dataset", "param": "dataset_id", "input": "text" },
+                { "label": "Frames per second", "node_id": "dataset", "param": "fps", "input": "number", "min": 1, "max": 120, "step": 1 },
+                { "label": "Camera index", "node_id": "camera", "param": "selection", "input": "number", "min": 0, "step": 1 },
+                { "label": "Task", "node_id": "dataset", "param": "task", "input": "textarea" }
+              ]
+            },
+            {
+              "type": "actions",
+              "id": "motion-actions",
+              "title": "Teleoperation",
+              "items": [
+                {
+                  "id": "arm-follower",
+                  "label": "Arm follower",
+                  "tone": "danger",
+                  "confirm": "Arm follower motion? Confirm calibration is selected, both arms are supported, the workspace is clear, and an emergency stop is available.",
+                  "updates": [{ "node_id": "armed", "param": "value", "value": true }],
+                  "cook_target": { "node_id": "follow", "port": "dashboard", "mode": "live" }
+                },
+                {
+                  "id": "disarm-follower",
+                  "label": "Disarm follower",
+                  "tone": "warning",
+                  "updates": [{ "node_id": "armed", "param": "value", "value": false }],
+                  "cook_target": { "node_id": "follow", "port": "dashboard", "mode": "live" }
+                }
+              ]
+            },
+            {
+              "type": "actions",
+              "id": "recording-actions",
+              "title": "Recording",
+              "items": [
+                { "id": "start-recording", "label": "Record episode", "tone": "primary", "control": { "node_id": "recorder", "action": "start" } },
+                { "id": "pause-recording", "label": "Pause", "control": { "node_id": "recorder", "action": "pause" } },
+                { "id": "resume-recording", "label": "Resume", "control": { "node_id": "recorder", "action": "resume" } },
+                { "id": "save-recording", "label": "Save episode", "tone": "success", "confirm": "Stop the current recording and save this episode?", "control": { "node_id": "recorder", "action": "save" } },
+                { "id": "discard-recording", "label": "Discard episode", "tone": "danger", "confirm": "Discard the current or recoverable episode? This removes its incomplete journal and captured frames.", "control": { "node_id": "recorder", "action": "discard" } }
+              ]
+            }
+          ]
+        }
+      ]
+    },
     "required_packages": [
       "blacknode-motion",
       "blacknode-robot",

@@ -22,6 +22,12 @@
 5. Review with `DatasetBrowser` or `EpisodeReplay`.
 6. Run `EpisodeDatasetValidate` before selecting an export or publishing profile.
 
+The `teleoperation-episode-recording` template includes a **Collect episodes**
+Workflow App. Opening it from the editor shortcut presents camera and motion
+views, dataset fields, live status, and episode controls. **Edit workflow**
+reveals the same underlying nodes for advanced configuration. Motion remains
+disarmed until the operator explicitly confirms arming.
+
 Recording journals frames before final conversion and preserves incomplete runs for recovery. Saved episodes contain a manifest, Parquet robot data, and one MP4 per camera under `~/.blacknode/datasets/<dataset-id>` by default.
 
 Key optional nodes include `TrajectorySmoother`, `StreamPublisher`, `HDF5EpisodeExport`, `LeRobotV3Export`, `BlacknodeHubExport`, and `HuggingFaceDatasetUpload`. Export and upload are separate actions; credentials are read from explicit configuration or environment and are never written into dataset artifacts.
