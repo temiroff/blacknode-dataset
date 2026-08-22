@@ -15,6 +15,7 @@ def test_episode_recording_operator_view_references_live_graph_contracts():
     assert view["id"] == "collect-episodes"
     assert view["title"] == "Collect episodes"
     assert all("title" not in section and "description" not in section for section in view["sections"])
+    assert next(section for section in view["sections"] if section["id"] == "controls")["region"] == "parameters"
     assert view["run_target"]["mode"] == "live"
     assert "follower motion remains disarmed" in view["run_target"]["confirm"].lower()
 

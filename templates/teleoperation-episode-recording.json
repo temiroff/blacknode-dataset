@@ -85,6 +85,7 @@
         },
         {
           "id": "controls",
+          "region": "parameters",
           "layout": "grid",
           "widgets": [
             {
