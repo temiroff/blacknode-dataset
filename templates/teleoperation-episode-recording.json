@@ -27,8 +27,6 @@
       "sections": [
         {
           "id": "live",
-          "title": "Live workspace",
-          "description": "Camera and robot motion views update from the workflow's managed services.",
           "layout": "grid",
           "widgets": [
             {
@@ -51,7 +49,6 @@
         },
         {
           "id": "state",
-          "title": "Episode state",
           "layout": "grid",
           "widgets": [
             {
@@ -88,8 +85,6 @@
         },
         {
           "id": "controls",
-          "title": "Setup and controls",
-          "description": "Configuration changes update the same underlying workflow that is available in Nodes mode.",
           "layout": "grid",
           "widgets": [
             {
