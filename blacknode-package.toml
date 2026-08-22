@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-dataset"
-version = "0.3.0"
+version = "0.3.1"
 description = "Blacknode-native episode recording, lazy dataset adapters, validation, HDF5, Hugging Face Hub and LeRobot interoperability."
 requires-blacknode = ">=0.1.0"
 layer = "learning"
