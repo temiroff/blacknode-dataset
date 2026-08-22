@@ -17,6 +17,68 @@
       "title": "Collect episodes",
       "description": "Teleoperate the robot, monitor live cameras and motion, and capture synchronized demonstration episodes.",
       "accent": "#fb7185",
+      "icon": "record",
+      "settings": {
+        "title": "Collect episodes settings",
+        "description": "Choose the robot connection, physical devices, camera, and dataset location before starting live services.",
+        "groups": [
+          {
+            "id": "connection",
+            "title": "Robot connection",
+            "description": "These values are applied consistently to the ROS bridge and teleoperation nodes.",
+            "items": [
+              {
+                "label": "ROS bridge host",
+                "node_id": "rosbridge",
+                "param": "host",
+                "input": "text",
+                "apply_to": [
+                  { "node_id": "leader_robot", "param": "host" },
+                  { "node_id": "follower_robot", "param": "host" },
+                  { "node_id": "leader_release", "param": "host" },
+                  { "node_id": "follow", "param": "host" }
+                ]
+              },
+              {
+                "label": "ROS bridge port",
+                "node_id": "rosbridge",
+                "param": "port",
+                "input": "number",
+                "min": 1,
+                "max": 65535,
+                "step": 1,
+                "apply_to": [
+                  { "node_id": "leader_robot", "param": "port" },
+                  { "node_id": "follower_robot", "param": "port" },
+                  { "node_id": "leader_release", "param": "port" },
+                  { "node_id": "follow", "param": "port" }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "devices",
+            "title": "Robot and camera",
+            "description": "Use detected indices for quick setup or an exact serial port to bind a physical arm.",
+            "items": [
+              { "label": "Leader profile", "node_id": "leader_robot", "param": "profile_id", "input": "text" },
+              { "label": "Leader robot index", "node_id": "leader_robot", "param": "selection", "input": "number", "min": 0, "step": 1 },
+              { "label": "Leader serial port", "node_id": "leader_robot", "param": "serial_port", "input": "text", "placeholder": "Optional exact device path" },
+              { "label": "Follower profile", "node_id": "follower_robot", "param": "profile_id", "input": "text" },
+              { "label": "Follower robot index", "node_id": "follower_robot", "param": "selection", "input": "number", "min": 0, "step": 1 },
+              { "label": "Follower serial port", "node_id": "follower_robot", "param": "serial_port", "input": "text", "placeholder": "Optional exact device path" },
+              { "label": "Camera index", "node_id": "camera", "param": "selection", "input": "number", "min": 0, "step": 1 }
+            ]
+          },
+          {
+            "id": "storage",
+            "title": "Dataset storage",
+            "items": [
+              { "label": "Dataset root", "node_id": "dataset", "param": "root", "input": "text", "placeholder": "Default Blacknode dataset directory" }
+            ]
+          }
+        ]
+      },
       "run_target": {
         "node_id": "recorder",
         "port": "dashboard",
@@ -95,7 +157,6 @@
               "items": [
                 { "label": "Dataset ID", "node_id": "dataset", "param": "dataset_id", "input": "text" },
                 { "label": "Frames per second", "node_id": "dataset", "param": "fps", "input": "number", "min": 1, "max": 120, "step": 1 },
-                { "label": "Camera index", "node_id": "camera", "param": "selection", "input": "number", "min": 0, "step": 1 },
                 { "label": "Task", "node_id": "dataset", "param": "task", "input": "textarea" }
               ]
             },
@@ -248,6 +309,7 @@
         "run_id": "leader_arm_driver",
         "topic_prefix": "/leader",
         "rate_hz": 60.0,
+        "serial_port": "",
         "host": "127.0.0.1",
         "port": 9090,
         "state_topic": "/leader/joint_states",
@@ -353,6 +415,7 @@
         "run_id": "follower_arm_driver",
         "topic_prefix": "/follower",
         "rate_hz": 60.0,
+        "serial_port": "",
         "host": "127.0.0.1",
         "port": 9090,
         "state_topic": "/follower/joint_states",

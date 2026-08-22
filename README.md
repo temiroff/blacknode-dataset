@@ -29,7 +29,9 @@ reveals the same underlying nodes for advanced configuration. Motion remains
 disarmed until the operator explicitly confirms arming. **Shortcuts & pedals**
 can map recorder actions to keyboard keys or USB pedals exposed as keyboard or
 game-controller buttons; those bindings retain the normal recorder and safety
-checks.
+checks. In a deployed customer App, the Blacknode top bar retains the recording
+icon and opens **Settings** for ROS host/port, leader and follower selection,
+exact serial ports, camera selection, and dataset storage.
 
 Recording journals frames before final conversion and preserves incomplete runs for recovery. Saved episodes contain a manifest, Parquet robot data, and one MP4 per camera under `~/.blacknode/datasets/<dataset-id>` by default.
 

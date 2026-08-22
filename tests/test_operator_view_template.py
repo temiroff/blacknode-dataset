@@ -14,6 +14,8 @@ def test_episode_recording_operator_view_references_live_graph_contracts():
     assert view["schema_version"] == 1
     assert view["id"] == "collect-episodes"
     assert view["title"] == "Collect episodes"
+    assert view["icon"] == "record"
+    assert view["settings"]["groups"]
     assert all("title" not in section and "description" not in section for section in view["sections"])
     assert next(section for section in view["sections"] if section["id"] == "controls")["region"] == "parameters"
     assert view["run_target"]["mode"] == "live"
@@ -44,6 +46,19 @@ def test_episode_recording_operator_view_references_live_graph_contracts():
     for target in targets:
         assert target["node_id"] in nodes
         assert target["port"] in nodes[target["node_id"]]["outputs"]
+
+    for group in view["settings"]["groups"]:
+        for item in group["items"]:
+            setting_targets = [item, *item.get("apply_to", [])]
+            for target in setting_targets:
+                assert target["node_id"] in nodes
+                assert target["param"] in nodes[target["node_id"]]["params"]
+
+    connection = next(group for group in view["settings"]["groups"] if group["id"] == "connection")
+    ros_host = next(item for item in connection["items"] if item["param"] == "host")
+    assert {target["node_id"] for target in ros_host["apply_to"]} == {
+        "leader_robot", "follower_robot", "leader_release", "follow",
+    }
 
 
 def test_episode_recording_operator_view_preserves_motion_and_data_safety():
