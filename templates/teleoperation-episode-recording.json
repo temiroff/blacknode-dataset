@@ -13,6 +13,7 @@
     "color": "#8b5cf6",
     "operator_view": {
       "schema_version": 1,
+      "id": "collect-episodes",
       "title": "Collect episodes",
       "description": "Teleoperate the robot, monitor live cameras and motion, and capture synchronized demonstration episodes.",
       "accent": "#fb7185",

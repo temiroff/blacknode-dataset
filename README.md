@@ -26,7 +26,10 @@ The `teleoperation-episode-recording` template includes a **Collect episodes**
 Workflow App. Opening it from the editor shortcut presents camera and motion
 views, dataset fields, live status, and episode controls. **Edit workflow**
 reveals the same underlying nodes for advanced configuration. Motion remains
-disarmed until the operator explicitly confirms arming.
+disarmed until the operator explicitly confirms arming. **Shortcuts & pedals**
+can map recorder actions to keyboard keys or USB pedals exposed as keyboard or
+game-controller buttons; those bindings retain the normal recorder and safety
+checks.
 
 Recording journals frames before final conversion and preserves incomplete runs for recovery. Saved episodes contain a manifest, Parquet robot data, and one MP4 per camera under `~/.blacknode/datasets/<dataset-id>` by default.
 

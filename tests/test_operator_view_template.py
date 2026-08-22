@@ -12,6 +12,7 @@ def test_episode_recording_operator_view_references_live_graph_contracts():
     view = graph["metadata"]["operator_view"]
 
     assert view["schema_version"] == 1
+    assert view["id"] == "collect-episodes"
     assert view["title"] == "Collect episodes"
     assert view["run_target"]["mode"] == "live"
     assert "follower motion remains disarmed" in view["run_target"]["confirm"].lower()
@@ -61,4 +62,3 @@ def test_episode_recording_operator_view_preserves_motion_and_data_safety():
     assert actions["disarm-follower"]["updates"][0]["value"] is False
     assert actions["discard-recording"]["confirm"]
     assert actions["discard-recording"]["control"]["action"] == "discard"
-
