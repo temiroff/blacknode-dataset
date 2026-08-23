@@ -59,6 +59,17 @@ def test_episode_recording_operator_view_references_live_graph_contracts():
     assert {target["node_id"] for target in ros_host["apply_to"]} == {
         "leader_robot", "follower_robot", "leader_release", "follow",
     }
+    devices = next(group for group in view["settings"]["groups"] if group["id"] == "devices")
+    calibration_pickers = [
+        item for item in devices["items"] if item.get("input") == "calibration_file"
+    ]
+    assert {(item["node_id"], item["param"]) for item in calibration_pickers} == {
+        ("leader_robot", "calibration"),
+        ("follower_robot", "calibration"),
+    }
+    for node_id in ("leader_robot", "follower_robot"):
+        assert "calibration" in nodes[node_id]["inputs"]
+        assert nodes[node_id]["input_types"]["calibration"] == "Dict"
 
 
 def test_episode_recording_operator_view_preserves_motion_and_data_safety():

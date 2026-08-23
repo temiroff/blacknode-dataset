@@ -62,9 +62,11 @@
             "description": "Use detected indices for quick setup or an exact serial port to bind a physical arm.",
             "items": [
               { "label": "Leader profile", "node_id": "leader_robot", "param": "profile_id", "input": "text" },
+              { "label": "Leader calibration", "node_id": "leader_robot", "param": "calibration", "input": "calibration_file", "placeholder": "Choose the existing leader calibration JSON." },
               { "label": "Leader robot index", "node_id": "leader_robot", "param": "selection", "input": "number", "min": 0, "step": 1 },
               { "label": "Leader serial port", "node_id": "leader_robot", "param": "serial_port", "input": "text", "placeholder": "Optional exact device path" },
               { "label": "Follower profile", "node_id": "follower_robot", "param": "profile_id", "input": "text" },
+              { "label": "Follower calibration", "node_id": "follower_robot", "param": "calibration", "input": "calibration_file", "placeholder": "Choose the existing follower calibration JSON." },
               { "label": "Follower robot index", "node_id": "follower_robot", "param": "selection", "input": "number", "min": 0, "step": 1 },
               { "label": "Follower serial port", "node_id": "follower_robot", "param": "serial_port", "input": "text", "placeholder": "Optional exact device path" },
               { "label": "Camera index", "node_id": "camera", "param": "selection", "input": "number", "min": 0, "step": 1 }
@@ -309,6 +311,8 @@
       ],
       "params": {
         "profile_id": "so_arm101",
+        "calibration": {},
+        "calibration_hardware_id": "",
         "selection": 0,
         "action": "start",
         "run_id": "leader_arm_driver",
@@ -327,6 +331,8 @@
         "trigger",
         "driver",
         "usb",
+        "calibration",
+        "calibration_hardware_id",
         "action",
         "run_id",
         "port_filter",
@@ -355,6 +361,8 @@
         "trigger": "Any",
         "driver": "Dict",
         "usb": "Dict",
+        "calibration": "Dict",
+        "calibration_hardware_id": "Text",
         "action": "Text",
         "run_id": "Text",
         "port_filter": "Text",
@@ -380,6 +388,7 @@
         "report": "Text"
       },
       "input_defaults": {
+        "calibration_hardware_id": "",
         "action": "start",
         "run_id": "leader_arm_driver",
         "port_filter": "",
@@ -415,6 +424,8 @@
       ],
       "params": {
         "profile_id": "so_arm101",
+        "calibration": {},
+        "calibration_hardware_id": "",
         "selection": 1,
         "action": "start",
         "run_id": "follower_arm_driver",
@@ -433,6 +444,8 @@
         "trigger",
         "driver",
         "usb",
+        "calibration",
+        "calibration_hardware_id",
         "action",
         "run_id",
         "port_filter",
@@ -461,6 +474,8 @@
         "trigger": "Any",
         "driver": "Dict",
         "usb": "Dict",
+        "calibration": "Dict",
+        "calibration_hardware_id": "Text",
         "action": "Text",
         "run_id": "Text",
         "port_filter": "Text",
@@ -486,6 +501,7 @@
         "report": "Text"
       },
       "input_defaults": {
+        "calibration_hardware_id": "",
         "action": "start",
         "run_id": "follower_arm_driver",
         "port_filter": "",
