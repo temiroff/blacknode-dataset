@@ -5,6 +5,7 @@ import base64
 import json
 import threading
 import time
+import tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -69,6 +70,17 @@ def test_manifest_defaults_keep_heavier_dataset_operations_optional():
     info = _PACKAGE_REGISTRY["blacknode-dataset"]
     assert all(info.components[name]["default"] for name in {"recording", "replay", "validation"})
     assert not any(info.components[name]["default"] for name in {"evaluation", "export", "publishing"})
+
+
+def test_manifest_scopes_optional_python_dependencies_to_components():
+    manifest = tomllib.loads((_PACKAGE_DIR / "blacknode-package.toml").read_text(encoding="utf-8"))
+    assert manifest["dependencies"]["pip"] == ["numpy>=1.24"]
+    components = manifest["components"]
+    assert "huggingface-hub>=0.24" in components["publishing"]["dependencies"]["pip"]
+    assert "huggingface-hub>=0.24" not in components["recording"]["dependencies"]["pip"]
+    assert "h5py>=3.11" in components["export"]["dependencies"]["pip"]
+    assert "h5py>=3.11" not in components["validation"]["dependencies"]["pip"]
+    assert components["publishing"]["dependencies"]["requires"] == [{"component": "export"}]
 
 
 def _jpeg(value: int) -> bytes:

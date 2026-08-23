@@ -6,12 +6,18 @@
 
 | Component | Default | Purpose |
 |---|---:|---|
+| `adapters` | Off | Local BlacknodeDataset and LeRobot dataset source adapters |
 | `recording` | On | Dataset creation, camera collection, journaling, and episode recording |
 | `replay` | On | Episode browsing, playback, trimming, streaming, and trajectory smoothing |
 | `validation` | On | Dataset summaries, statistics, and consistency checks |
 | `evaluation` | Off | Episode scoring |
 | `export` | Off | HDF5 and LeRobot Parquet/MP4 export |
 | `publishing` | Off | Blacknode Hub export, WebSocket streaming, and explicit repository upload |
+
+Python dependencies are declared per component. Package setup installs the
+enabled component set, and portable Workflow App packages install only the
+components selected by their bundled workflows. The shared NumPy runtime stays
+available to the package's common trajectory helpers.
 
 ## Typical workflow
 

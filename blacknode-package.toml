@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-dataset"
-version = "0.3.2"
+version = "0.3.3"
 description = "Blacknode-native episode recording, lazy dataset adapters, validation, HDF5, Hugging Face Hub and LeRobot interoperability."
 requires-blacknode = ">=0.1.0"
 layer = "learning"
@@ -10,8 +10,8 @@ component-mode = true
 "Dataset" = "#8b5cf6"
 
 [dependencies]
-pip = ["pyarrow>=16", "pandas>=2.0", "opencv-python>=4.8", "numpy>=1.24", "huggingface-hub>=0.24", "h5py>=3.11", "imageio-ffmpeg>=0.5"]
-imports = ["pyarrow", "pandas", "cv2", "numpy", "huggingface_hub", "h5py", "imageio_ffmpeg"]
+pip = ["numpy>=1.24"]
+imports = ["numpy"]
 
 [components.adapters]
 description = "Lazy BlacknodeDataset views and external dataset source adapters."
@@ -19,58 +19,77 @@ default = false
 capabilities = ["dataset.adapters", "dataset.lerobot"]
 node-types = ["LeRobotDataset"]
 
+[components.adapters.dependencies]
+pip = ["pyarrow>=16"]
+imports = ["pyarrow"]
+
 # Roadmap component; sources land in components/recording/nodes.
 [components.recording]
 description = "Episode capture, dataset creation, and stream browsing."
 default = true
 capabilities = ["dataset.recording"]
 templates = ["components/recording/templates"]
-
-# Roadmap component; sources land in components/replay/nodes.
 node-types = [
   "DatasetBrowser", "DatasetCameraStreamList", "DatasetCreate", "EpisodeRecorder"
 ]
 
+[components.recording.dependencies]
+pip = ["pyarrow>=16", "opencv-python>=4.8", "imageio-ffmpeg>=0.5"]
+imports = ["pyarrow", "cv2", "imageio_ffmpeg"]
+
+# Roadmap component; sources land in components/replay/nodes.
 [components.replay]
 description = "Episode replay and trajectory smoothing."
 default = true
 capabilities = ["dataset.replay"]
-
-# Roadmap component; sources land in components/validation/nodes.
 node-types = [
   "EpisodeReplay", "TrajectorySmoother"
 ]
 
+[components.replay.dependencies]
+pip = ["pyarrow>=16", "opencv-python>=4.8"]
+imports = ["pyarrow", "cv2"]
+
+# Roadmap component; sources land in components/validation/nodes.
 [components.validation]
 description = "Dataset validation, summaries, and statistics."
 default = true
 capabilities = ["dataset.validation"]
-
-# Roadmap component; sources land in components/evaluation/nodes.
 node-types = [
   "EpisodeDatasetSummary", "EpisodeDatasetValidate", "EpisodeStats"
 ]
 
+[components.validation.dependencies]
+pip = ["pyarrow>=16"]
+imports = ["pyarrow"]
+
+# Roadmap component; sources land in components/evaluation/nodes.
 [components.evaluation]
 description = "Episode scoring and evaluation."
 default = false
 capabilities = ["dataset.evaluation"]
-
-# Roadmap component; sources land in components/export/nodes.
 node-types = [
   "EpisodeEvaluator"
 ]
 
+[components.evaluation.dependencies]
+pip = ["pyarrow>=16"]
+imports = ["pyarrow"]
+
+# Roadmap component; sources land in components/export/nodes.
 [components.export]
 description = "HDF5 and LeRobot dataset export."
 default = false
 capabilities = ["dataset.export"]
-
-# Roadmap component; sources land in components/publishing/nodes.
 node-types = [
   "HDF5EpisodeExport", "LeRobotV3Export"
 ]
 
+[components.export.dependencies]
+pip = ["pyarrow>=16", "pandas>=2.0", "opencv-python>=4.8", "h5py>=3.11", "imageio-ffmpeg>=0.5"]
+imports = ["pyarrow", "pandas", "cv2", "h5py", "imageio_ffmpeg"]
+
+# Roadmap component; sources land in components/publishing/nodes.
 [components.publishing]
 description = "Hub upload and repository publishing."
 default = false
@@ -78,3 +97,8 @@ capabilities = ["dataset.publishing"]
 node-types = [
   "BlacknodeHubExport", "HuggingFaceDatasetUpload", "StreamPublisher"
 ]
+
+[components.publishing.dependencies]
+pip = ["huggingface-hub>=0.24"]
+imports = ["huggingface_hub"]
+requires = [{ component = "export" }]
