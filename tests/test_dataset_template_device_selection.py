@@ -7,7 +7,7 @@ from pathlib import Path
 
 _TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
 _EXPECTED_ROBOTS = {
-    "teleoperation-episode-recording.json": {"leader_robot": 1, "follower_robot": 0},
+    "teleoperation-episode-recording.json": {"leader_robot": 0, "follower_robot": 1},
 }
 
 
