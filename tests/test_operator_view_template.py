@@ -79,3 +79,16 @@ def test_episode_recording_operator_view_preserves_motion_and_data_safety():
     assert actions["disarm-follower"]["updates"][0]["value"] is False
     assert actions["discard-recording"]["confirm"]
     assert actions["discard-recording"]["control"]["action"] == "discard"
+
+
+def test_episode_recording_declares_hardware_and_transport_dependency_closure():
+    graph = json.loads(TEMPLATE.read_text(encoding="utf-8"))
+    metadata = graph["metadata"]
+
+    assert "blacknode-drivers" in metadata["required_packages"]
+    assert {
+        "blacknode-drivers/feetech",
+        "blacknode-robot/devices",
+        "blacknode-ros2/rosbridge",
+    }.issubset(metadata["required_components"])
+    assert "blacknode-drivers/feetech@ros2" in metadata["required_adapters"]

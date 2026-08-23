@@ -199,6 +199,7 @@
       ]
     },
     "required_packages": [
+      "blacknode-drivers",
       "blacknode-motion",
       "blacknode-robot",
       "blacknode-ros2",
@@ -207,8 +208,11 @@
       "blacknode-skills"
     ],
     "required_components": [
+      "blacknode-drivers/feetech",
       "blacknode-motion/arm",
       "blacknode-robot/core",
+      "blacknode-robot/devices",
+      "blacknode-ros2/rosbridge",
       "blacknode-ros2/diagnostics",
       "blacknode-perception/camera",
       "blacknode-dataset/recording",
@@ -217,6 +221,7 @@
       "blacknode-skills/follow"
     ],
     "required_adapters": [
+      "blacknode-drivers/feetech@ros2",
       "blacknode-motion/arm@ros2",
       "blacknode-skills/follow@ros2"
     ]
