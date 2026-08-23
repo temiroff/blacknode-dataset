@@ -19,6 +19,7 @@ def test_episode_recording_operator_view_references_live_graph_contracts():
     assert all("title" not in section and "description" not in section for section in view["sections"])
     assert next(section for section in view["sections"] if section["id"] == "controls")["region"] == "parameters"
     assert view["run_target"]["mode"] == "live"
+    assert view["run_target"]["live_source"] == {"node_id": "follow", "port": "running"}
     assert "follower motion remains disarmed" in view["run_target"]["confirm"].lower()
 
     targets = [view["run_target"]]
@@ -39,7 +40,9 @@ def test_episode_recording_operator_view_references_live_graph_contracts():
                     assert update["node_id"] in nodes
                     assert update["param"] in nodes[update["node_id"]]["params"]
                 if "control" in item:
-                    assert nodes[item["control"]["node_id"]]["type"] == "EpisodeRecorder"
+                    assert item["control"]["node_id"] in nodes
+                if "deactivate_control" in item:
+                    assert item["deactivate_control"]["node_id"] in nodes
                 if "cook_target" in item:
                     targets.append(item["cook_target"])
 
@@ -53,6 +56,10 @@ def test_episode_recording_operator_view_references_live_graph_contracts():
             for target in setting_targets:
                 assert target["node_id"] in nodes
                 assert target["param"] in nodes[target["node_id"]]["params"]
+            for pair in item.get("swap_pairs", []):
+                for target in (pair["left"], pair["right"]):
+                    assert target["node_id"] in nodes
+                    assert target["param"] in nodes[target["node_id"]]["params"]
 
     connection = next(group for group in view["settings"]["groups"] if group["id"] == "connection")
     ros_host = next(item for item in connection["items"] if item["param"] == "host")
@@ -70,6 +77,18 @@ def test_episode_recording_operator_view_references_live_graph_contracts():
     for node_id in ("leader_robot", "follower_robot"):
         assert "calibration" in nodes[node_id]["inputs"]
         assert nodes[node_id]["input_types"]["calibration"] == "Dict"
+    role_swap = next(item for item in devices["items"] if item.get("input") == "swap")
+    assert role_swap["disabled_when"] == {"node_id": "follow", "port": "running"}
+    assert {
+        (pair["left"]["param"], pair["right"]["param"])
+        for pair in role_swap["swap_pairs"]
+    } == {
+        ("selection", "selection"),
+        ("serial_port", "serial_port"),
+        ("profile_id", "profile_id"),
+        ("calibration_hardware_id", "calibration_hardware_id"),
+        ("calibration", "calibration"),
+    }
 
 
 def test_episode_recording_operator_view_preserves_motion_and_data_safety():
@@ -85,9 +104,12 @@ def test_episode_recording_operator_view_preserves_motion_and_data_safety():
 
     assert graph["node_meta"]["armed"]["params"]["value"] is False
     assert graph["node_meta"]["follow"]["params"]["armed"] is False
-    assert actions["arm-follower"]["confirm"]
-    assert actions["arm-follower"]["updates"][0]["value"] is True
-    assert actions["disarm-follower"]["updates"][0]["value"] is False
+    toggle = actions["toggle-follower"]
+    assert toggle["confirm"]
+    assert toggle["state"] == {"node_id": "follow", "port": "armed"}
+    assert toggle["control"]["action"] == "arm"
+    assert toggle["deactivate_control"]["action"] == "disarm"
+    assert "cook_target" not in toggle
     assert actions["discard-recording"]["confirm"]
     assert actions["discard-recording"]["control"]["action"] == "discard"
 
