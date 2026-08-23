@@ -104,6 +104,7 @@ def test_episode_recording_operator_view_preserves_motion_and_data_safety():
 
     assert graph["node_meta"]["armed"]["params"]["value"] is False
     assert graph["node_meta"]["follow"]["params"]["armed"] is False
+    assert graph["node_meta"]["follow"]["params"]["scale"] == {"gripper": -1.0}
     toggle = actions["toggle-follower"]
     assert toggle["confirm"]
     assert toggle["state"] == {"node_id": "follow", "port": "armed"}
